@@ -5,6 +5,7 @@ import pytest
 from invoiceops.domain.models import Decision, InvoiceStatus
 from invoiceops.legacy.db import (
     InvalidInvoiceTransition,
+    _connect,
     get_invoice,
     list_decision_events,
     list_invoices,
@@ -75,9 +76,9 @@ def test_processed_invoice_cannot_be_processed_again(db_path: Path) -> None:
 
 
 def test_seed_creates_the_six_specified_invoices(db_path: Path) -> None:
-    invoices = list_invoices(db_path)
+    result = list_invoices(db_path)
 
-    assert [invoice.invoice_id for invoice in invoices] == [
+    assert [invoice.invoice_id for invoice in result.invoices] == [
         "INV-10023",
         "INV-10024",
         "INV-10025",
@@ -85,6 +86,23 @@ def test_seed_creates_the_six_specified_invoices(db_path: Path) -> None:
         "INV-10027",
         "INV-10028",
     ]
+    assert result.has_more is False
+
+
+def test_invoice_list_is_limited_and_reports_when_more_results_exist(db_path: Path) -> None:
+    insert_invoices(db_path, count=101)
+
+    result = list_invoices(db_path)
+
+    assert len(result.invoices) == 100
+    assert result.has_more is True
+
+
+def test_invoice_search_treats_wildcards_as_literal_text(db_path: Path) -> None:
+    result = list_invoices(db_path, query="%' OR 1=1 --")
+
+    assert result.invoices == []
+    assert result.has_more is False
 
 
 def test_database_path_can_be_overridden_by_environment(
@@ -96,4 +114,30 @@ def test_database_path_can_be_overridden_by_environment(
     seed_invoices()
 
     assert db_path.exists()
-    assert len(list_invoices()) == 6
+    assert len(list_invoices().invoices) == 6
+
+
+def insert_invoices(db_path: Path, *, count: int) -> None:
+    rows = [
+        (
+            f"INV-EXTRA-{number:03d}",
+            "Bulk Vendor",
+            100,
+            1,
+            1,
+            InvoiceStatus.PENDING.value,
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-01T00:00:00+00:00",
+        )
+        for number in range(count)
+    ]
+    with _connect(db_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO invoices (
+                invoice_id, vendor_name, invoice_amount_cents, has_purchase_order,
+                three_way_match, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )

@@ -1,0 +1,33 @@
+:root { color: #182235; background: #f4f7fb; font-family: Arial, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+.site-header { align-items: center; background: #102a43; display: flex; justify-content: space-between; min-height: 64px; padding: 0 7vw; }
+.brand { color: #fff; font-size: 1.2rem; font-weight: 700; text-decoration: none; }
+.content { margin: 0 auto; max-width: 1100px; padding: 48px 24px; }
+.page-heading { align-items: center; display: flex; justify-content: space-between; margin-bottom: 24px; }
+h1, h2, p { margin-top: 0; }
+h1 { margin-bottom: 4px; }
+.eyebrow { color: #486581; font-size: .78rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.card, .table-wrap { background: #fff; border: 1px solid #d9e2ec; border-radius: 8px; box-shadow: 0 2px 8px #102a4312; margin-bottom: 24px; padding: 24px; }
+.login-card { margin: 8vh auto; max-width: 440px; }
+.stack { display: grid; gap: 16px; }
+label { color: #334e68; display: grid; font-weight: 600; gap: 6px; }
+input { border: 1px solid #9fb3c8; border-radius: 4px; font: inherit; padding: 10px; }
+button { background: #1f7a8c; border: 1px solid #1f7a8c; border-radius: 4px; color: #fff; cursor: pointer; font: inherit; font-weight: 700; padding: 10px 16px; }
+button:hover { background: #166272; }
+.link-button { background: none; border: 0; padding: 0; }
+.secondary { background: #fff; color: #1f7a8c; }
+.search { align-items: end; display: flex; gap: 10px; margin-bottom: 20px; }
+.search label { flex: 1; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border-bottom: 1px solid #d9e2ec; padding: 12px; text-align: left; }
+th { color: #486581; font-size: .78rem; text-transform: uppercase; }
+td a, .back-link { color: #126782; font-weight: 700; }
+.status { background: #e3f8ff; border-radius: 99px; color: #035388; display: inline-block; font-size: .78rem; font-weight: 700; padding: 4px 8px; }
+.facts { display: grid; gap: 24px; grid-template-columns: repeat(4, 1fr); }
+.facts span { color: #627d98; display: block; font-size: .82rem; margin-bottom: 5px; }
+.facts strong { font-size: 1.05rem; }
+.actions { display: flex; gap: 12px; }
+.error { color: #b42318; font-weight: 700; }
+.empty { color: #627d98; text-align: center; }
+@media (max-width: 700px) { .content { padding: 28px 16px; } .facts { grid-template-columns: repeat(2, 1fr); } .search { align-items: stretch; flex-direction: column; } .table-wrap { overflow-x: auto; } }

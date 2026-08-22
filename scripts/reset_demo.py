@@ -7,7 +7,7 @@ def main() -> None:
     reset_db(db_path)
     seed_invoices(db_path)
     print(f"Database: {db_path}")
-    print(f"Invoices: {len(list_invoices(db_path))}")
+    print(f"Invoices: {len(list_invoices(db_path).invoices)}")
 
 
 if __name__ == "__main__":

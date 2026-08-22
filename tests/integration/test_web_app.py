@@ -1,0 +1,264 @@
+import re
+from pathlib import Path
+from uuid import UUID
+
+import pytest
+from fastapi.testclient import TestClient
+
+from invoiceops.domain.models import InvoiceStatus
+from invoiceops.legacy.app import create_app
+from invoiceops.legacy.db import _connect, get_invoice, list_decision_events
+from invoiceops.legacy.seed import seed_invoices
+
+
+def test_login_required(db_path: Path) -> None:
+    client = TestClient(create_app(db_path))
+
+    for path in ("/invoices", "/invoices/INV-10023", "/admin/future"):
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"] == "/login"
+
+
+def test_login_success(db_path: Path) -> None:
+    client = TestClient(create_app(db_path))
+
+    response = client.post(
+        "/login",
+        data={"username": "analyst", "password": "demo-password"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/invoices"
+    csrf_token = csrf_token_from(client.get("/invoices"))
+    logout = client.post("/logout", data={"csrf_token": csrf_token}, follow_redirects=False)
+    assert logout.headers["location"] == "/login"
+
+
+def test_login_rejects_invalid_credentials(db_path: Path) -> None:
+    client = TestClient(create_app(db_path))
+
+    response = client.post("/login", data={"username": "analyst", "password": "wrong-password"})
+
+    assert response.status_code == 401
+    assert client.get("/invoices", follow_redirects=False).headers["location"] == "/login"
+
+
+def test_login_rejects_unicode_invalid_credentials(db_path: Path) -> None:
+    client = TestClient(create_app(db_path))
+
+    response = client.post("/login", data={"username": "analysté", "password": "wrong-password"})
+
+    assert response.status_code == 401
+    assert client.get("/invoices", follow_redirects=False).headers["location"] == "/login"
+
+
+def test_secure_mode_requires_explicit_non_demo_configuration(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INVOICEOPS_MODE", "secure")
+    monkeypatch.delenv("INVOICEOPS_SESSION_SECRET", raising=False)
+    monkeypatch.setenv("INVOICEOPS_DEMO_USERNAME", "secure-analyst")
+    monkeypatch.setenv("INVOICEOPS_DEMO_PASSWORD", "secure-password")
+
+    with pytest.raises(ValueError, match="INVOICEOPS_SESSION_SECRET"):
+        create_app(db_path)
+
+
+def test_mode_must_be_explicit_outside_local_demo(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("INVOICEOPS_MODE")
+
+    with pytest.raises(ValueError, match="INVOICEOPS_MODE"):
+        create_app(db_path)
+
+
+def test_secure_mode_rejects_demo_session_secret(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INVOICEOPS_MODE", "secure")
+    monkeypatch.setenv("INVOICEOPS_DEMO_USERNAME", "secure-analyst")
+    monkeypatch.setenv("INVOICEOPS_DEMO_PASSWORD", "secure-password")
+    monkeypatch.setenv("INVOICEOPS_SESSION_SECRET", "dev-only-change-me")
+
+    with pytest.raises(ValueError, match="must not use the demo secret"):
+        create_app(db_path)
+
+
+def test_secure_mode_sets_secure_session_cookie(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INVOICEOPS_MODE", "secure")
+    monkeypatch.setenv("INVOICEOPS_SESSION_SECRET", "secure-test-secret-that-is-not-the-demo-secret")
+    monkeypatch.setenv("INVOICEOPS_DEMO_USERNAME", "secure-analyst")
+    monkeypatch.setenv("INVOICEOPS_DEMO_PASSWORD", "secure-password")
+    client = TestClient(create_app(db_path))
+
+    response = client.post(
+        "/login",
+        data={"username": "secure-analyst", "password": "secure-password"},
+        follow_redirects=False,
+    )
+
+    cookie = response.headers["set-cookie"].lower()
+    assert "secure" in cookie
+    assert "httponly" in cookie
+    assert "samesite=lax" in cookie
+
+
+def test_invoice_list(db_path: Path) -> None:
+    client = authenticated_client(db_path)
+
+    response = client.get("/invoices?q=acME")
+
+    assert response.status_code == 200
+    assert "INV-10023" in response.text
+    assert "Acme Industrial" in response.text
+    assert "Northwind Parts" not in response.text
+
+
+def test_invoice_list_discloses_when_results_are_limited(db_path: Path) -> None:
+    insert_invoices(db_path, count=101)
+    client = authenticated_client(db_path)
+
+    response = client.get("/invoices")
+
+    assert response.status_code == 200
+    assert "Showing the first 100 results. Refine your search to see fewer results." in response.text
+
+
+def test_invoice_detail(db_path: Path) -> None:
+    response = authenticated_client(db_path).get("/invoices/INV-10023")
+
+    assert response.status_code == 200
+    assert 'data-testid="invoice-id">INV-10023' in response.text
+    assert 'data-testid="invoice-amount">$4820.00' in response.text
+    assert 'data-testid="invoice-has-po">Yes' in response.text
+    assert 'data-testid="invoice-three-way-match">Yes' in response.text
+    assert 'data-testid="invoice-status">PENDING' in response.text
+    assert 'data-testid="invoice-process"' in response.text
+    assert 'data-testid="invoice-manual-review"' in response.text
+
+
+def test_ui_decision(db_path: Path) -> None:
+    client = authenticated_client(db_path)
+    csrf_token = csrf_token_from(client.get("/invoices/INV-10023"))
+
+    response = client.post(
+        "/invoices/INV-10023/decision",
+        data={"decision": "AUTO_PROCESS", "csrf_token": csrf_token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/invoices/INV-10023"
+    assert get_invoice(db_path, "INV-10023").status is InvoiceStatus.AUTO_PROCESSED
+    events = list_decision_events(db_path, "INV-10023")
+    assert len(events) == 1
+    assert events[0]["actor"] == "ui"
+    assert events[0]["rule_version"] == "invoice-rules-v1"
+    assert UUID(events[0]["correlation_id"])
+    detail = client.get("/invoices/INV-10023")
+    assert "invoice-rules-v1" in detail.text
+    assert "ui" in detail.text
+    assert events[0]["correlation_id"] in detail.text
+
+
+def test_invalid_decision_is_controlled_and_does_not_mutate(db_path: Path) -> None:
+    client = authenticated_client(db_path)
+    csrf_token = csrf_token_from(client.get("/invoices/INV-10023"))
+
+    missing = client.post(
+        "/invoices/UNKNOWN/decision", data={"decision": "AUTO_PROCESS", "csrf_token": csrf_token}
+    )
+    cancelled = client.post(
+        "/invoices/INV-10028/decision",
+        data={"decision": "AUTO_PROCESS", "csrf_token": csrf_token},
+    )
+
+    assert missing.status_code == 404
+    assert "Invoice not found." in missing.text
+    assert cancelled.status_code == 409
+    assert "Invoice cannot be decided" in cancelled.text
+    assert get_invoice(db_path, "INV-10028").status is InvoiceStatus.CANCELLED
+    assert list_decision_events(db_path, "INV-10028") == []
+
+
+def test_logout_rejects_missing_csrf_and_keeps_session(db_path: Path) -> None:
+    client = authenticated_client(db_path)
+
+    response = client.post("/logout", follow_redirects=False)
+
+    assert response.status_code == 403
+    assert client.get("/invoices").status_code == 200
+
+
+def test_decision_rejects_missing_csrf_without_mutating_sqlite(db_path: Path) -> None:
+    client = authenticated_client(db_path)
+
+    response = client.post(
+        "/invoices/INV-10023/decision", data={"decision": "AUTO_PROCESS"}, follow_redirects=False
+    )
+
+    assert response.status_code == 403
+    assert get_invoice(db_path, "INV-10023").status is InvoiceStatus.PENDING
+    assert list_decision_events(db_path, "INV-10023") == []
+
+
+def test_csrf_token_is_bound_to_its_client_session(db_path: Path) -> None:
+    first_client = authenticated_client(db_path)
+    second_client = authenticated_client(db_path)
+    first_token = csrf_token_from(first_client.get("/invoices/INV-10023"))
+    second_token = csrf_token_from(second_client.get("/invoices/INV-10023"))
+
+    response = second_client.post(
+        "/invoices/INV-10023/decision",
+        data={"decision": "AUTO_PROCESS", "csrf_token": first_token},
+        follow_redirects=False,
+    )
+
+    assert first_token != second_token
+    assert response.status_code == 403
+    assert get_invoice(db_path, "INV-10023").status is InvoiceStatus.PENDING
+    assert list_decision_events(db_path, "INV-10023") == []
+
+
+def authenticated_client(db_path: Path) -> TestClient:
+    client = TestClient(create_app(db_path))
+    client.post("/login", data={"username": "analyst", "password": "demo-password"})
+    return client
+
+
+def csrf_token_from(response: object) -> str:
+    match = re.search(r'name="csrf_token" value="([^"]+)"', response.text)
+    assert match is not None
+    return match.group(1)
+
+
+def insert_invoices(db_path: Path, *, count: int) -> None:
+    rows = [
+        (
+            f"INV-EXTRA-{number:03d}",
+            "Bulk Vendor",
+            100,
+            1,
+            1,
+            InvoiceStatus.PENDING.value,
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-01T00:00:00+00:00",
+        )
+        for number in range(count)
+    ]
+    with _connect(db_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO invoices (
+                invoice_id, vendor_name, invoice_amount_cents, has_purchase_order,
+                three_way_match, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+
+
+@pytest.fixture
+def db_path(tmp_path: Path) -> Path:
+    path = tmp_path / "invoiceops.db"
+    seed_invoices(path)
+    return path

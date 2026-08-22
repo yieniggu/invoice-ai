@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}InvoiceOps{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/invoices">InvoiceOps</a>
+      {% if request.session.get("username") %}
+      <form action="/logout" method="post"><input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}"><button class="link-button" type="submit">Log out</button></form>
+      {% endif %}
+    </header>
+    <main class="content">{% block content %}{% endblock %}</main>
+  </body>
+</html>

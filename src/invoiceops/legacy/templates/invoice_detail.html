@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Invoice detail | InvoiceOps{% endblock %}
+{% block content %}
+{% if error %}<section class="card"><h1>{{ error }}</h1><a href="/invoices">Back to invoices</a></section>{% else %}
+<a class="back-link" href="/invoices">Back to invoices</a>
+<div class="page-heading"><div><p class="eyebrow">Invoice detail</p><h1 data-testid="invoice-id">{{ invoice.invoice_id }}</h1></div><span class="status" data-testid="invoice-status">{{ invoice.status.value }}</span></div>
+<section class="card facts"><div><span>Vendor</span><strong>{{ invoice.vendor_name }}</strong></div><div><span>Amount</span><strong data-testid="invoice-amount">${{ "%.2f"|format(invoice.invoice_amount_cents / 100) }}</strong></div><div><span>Purchase order</span><strong data-testid="invoice-has-po">{{ "Yes" if invoice.has_purchase_order else "No" }}</strong></div><div><span>Three-way match</span><strong data-testid="invoice-three-way-match">{{ "Yes" if invoice.three_way_match else "No" }}</strong></div></section>
+{% if invoice.status.value == "PENDING" %}<section class="card"><h2>Decision</h2><form action="/invoices/{{ invoice.invoice_id }}/decision" method="post" class="actions"><input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}"><button data-testid="invoice-process" name="decision" value="AUTO_PROCESS" type="submit">Process</button><button data-testid="invoice-manual-review" name="decision" value="MANUAL_REVIEW" type="submit" class="secondary">Manual Review</button></form></section>{% endif %}
+<section class="card"><h2>Audit events</h2><table><thead><tr><th>Time</th><th>Decision</th><th>Rule version</th><th>Actor</th><th>Correlation ID</th></tr></thead><tbody>{% for event in events %}<tr><td>{{ event["created_at"] }}</td><td>{{ event["decision"] }}</td><td>{{ event["rule_version"] }}</td><td>{{ event["actor"] }}</td><td>{{ event["correlation_id"] }}</td></tr>{% else %}<tr><td colspan="5" class="empty">No decisions recorded.</td></tr>{% endfor %}</tbody></table></section>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Invoices | InvoiceOps{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">Operations</p><h1>Invoices</h1></div></div>
+<form action="/invoices" method="get" class="search"><label for="query">Search ID or vendor</label><input id="query" name="q" value="{{ q }}"><button type="submit">Search</button></form>
+{% if has_more %}<p class="empty">Showing the first 100 results. Refine your search to see fewer results.</p>{% endif %}
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>Vendor</th><th>Amount</th><th>PO</th><th>Match</th><th>Status</th></tr></thead>
+<tbody>{% for invoice in invoices %}<tr><td><a href="/invoices/{{ invoice.invoice_id }}">{{ invoice.invoice_id }}</a></td><td>{{ invoice.vendor_name }}</td><td>${{ "%.2f"|format(invoice.invoice_amount_cents / 100) }}</td><td>{{ "Yes" if invoice.has_purchase_order else "No" }}</td><td>{{ "Yes" if invoice.three_way_match else "No" }}</td><td><span class="status">{{ invoice.status.value }}</span></td></tr>{% else %}<tr><td colspan="6" class="empty">No invoices match this search.</td></tr>{% endfor %}</tbody></table></div>
+{% endblock %}

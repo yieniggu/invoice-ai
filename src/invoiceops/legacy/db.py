@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -7,6 +8,13 @@ from invoiceops.domain.models import Decision, Invoice, InvoiceStatus
 from invoiceops.domain.rules import RULE_VERSION
 
 DEFAULT_DB_PATH = Path("var/invoiceops.db")
+INVOICE_LIST_LIMIT = 100
+
+
+@dataclass
+class InvoiceListResult:
+    invoices: list[Invoice]
+    has_more: bool
 
 
 class InvalidInvoiceTransition(Exception):
@@ -81,10 +89,26 @@ def get_invoice(db_path: str | Path | None, invoice_id: str) -> Invoice | None:
     return _invoice_from_row(row) if row is not None else None
 
 
-def list_invoices(db_path: str | Path | None = None) -> list[Invoice]:
+def list_invoices(
+    db_path: str | Path | None = None, *, query: str = ""
+) -> InvoiceListResult:
+    escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped_query}%"
     with _connect(db_path) as connection:
-        rows = connection.execute("SELECT * FROM invoices ORDER BY invoice_id").fetchall()
-    return [_invoice_from_row(row) for row in rows]
+        rows = connection.execute(
+            """
+            SELECT * FROM invoices
+            WHERE invoice_id LIKE ? ESCAPE '\\' COLLATE NOCASE
+               OR vendor_name LIKE ? ESCAPE '\\' COLLATE NOCASE
+            ORDER BY invoice_id
+            LIMIT ?
+            """,
+            (pattern, pattern, INVOICE_LIST_LIMIT + 1),
+        ).fetchall()
+    return InvoiceListResult(
+        invoices=[_invoice_from_row(row) for row in rows[:INVOICE_LIST_LIMIT]],
+        has_more=len(rows) > INVOICE_LIST_LIMIT,
+    )
 
 
 def update_invoice_decision(
