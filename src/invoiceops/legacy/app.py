@@ -2,10 +2,11 @@ from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -28,6 +29,10 @@ from invoiceops.legacy.db import (
 
 BASE_DIR = Path(__file__).parent
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
+
+
+class ApiDecisionRequest(BaseModel):
+    decision: Decision
 
 
 def create_app(db_path: str | Path | None = None) -> FastAPI:
@@ -53,6 +58,54 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         https_only=settings.secure_cookies,
         same_site="lax",
     )
+
+    @app.get("/api/health")
+    def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/api/invoices")
+    def api_invoice_list(q: str = "") -> dict[str, object]:
+        result = list_invoices(db_path, query=q)
+        return {"invoices": result.invoices, "has_more": result.has_more}
+
+    @app.get("/api/invoices/{invoice_id}")
+    def api_invoice_detail(invoice_id: str) -> object:
+        invoice = get_invoice(db_path, invoice_id)
+        if invoice is None:
+            raise HTTPException(status_code=404, detail="Invoice not found.")
+        return invoice
+
+    @app.post("/api/v1/invoices/{invoice_id}/decision")
+    def api_decide_invoice(
+        invoice_id: str,
+        payload: ApiDecisionRequest,
+        response: Response,
+        correlation_id: Annotated[str | None, Header(alias="X-Correlation-ID")] = None,
+    ) -> dict[str, str]:
+        correlation_id = str(uuid4()) if correlation_id is None else correlation_id
+        try:
+            invoice = update_invoice_decision(
+                db_path,
+                invoice_id,
+                payload.decision,
+                actor="api",
+                correlation_id=correlation_id,
+            )
+        except LookupError:
+            raise HTTPException(status_code=404, detail="Invoice not found.") from None
+        except InvalidInvoiceTransition:
+            raise HTTPException(
+                status_code=409, detail="Invoice cannot be decided from its current state."
+            ) from None
+
+        response.headers["X-Correlation-ID"] = correlation_id
+        return {
+            "invoice_id": invoice.invoice_id,
+            "status": invoice.status.value,
+            "decision": payload.decision.value,
+            "rule_version": "invoice-rules-v1",
+            "correlation_id": correlation_id,
+        }
 
     @app.get("/login", response_class=HTMLResponse)
     def login_form(request: Request) -> HTMLResponse:
