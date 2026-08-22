@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "invoiceops"
+version = "0.1.0"
+description = "InvoiceOps teaching MVP bootstrap"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "jinja2",
+    "python-multipart",
+    "itsdangerous",
+    "playwright",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "httpx",
+    "ruff",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/invoiceops"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
