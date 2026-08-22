@@ -1,0 +1,99 @@
+from pathlib import Path
+
+import pytest
+
+from invoiceops.domain.models import Decision, InvoiceStatus
+from invoiceops.legacy.db import (
+    InvalidInvoiceTransition,
+    get_invoice,
+    list_decision_events,
+    list_invoices,
+    update_invoice_decision,
+)
+from invoiceops.legacy.seed import seed_invoices
+
+
+@pytest.fixture
+def db_path(tmp_path: Path) -> Path:
+    path = tmp_path / "invoiceops.db"
+    seed_invoices(path)
+    return path
+
+
+def test_decision_updates_invoice_and_creates_event(db_path: Path) -> None:
+    invoice = update_invoice_decision(
+        db_path,
+        "INV-10023",
+        Decision.AUTO_PROCESS,
+        actor="demo-user",
+        correlation_id="corr-10023",
+    )
+
+    assert invoice.status is InvoiceStatus.AUTO_PROCESSED
+    assert get_invoice(db_path, "INV-10023") == invoice
+    events = list_decision_events(db_path, "INV-10023")
+    assert len(events) == 1
+    assert events[0]["decision"] == Decision.AUTO_PROCESS.value
+    assert events[0]["rule_version"] == "invoice-rules-v1"
+    assert events[0]["actor"] == "demo-user"
+    assert events[0]["correlation_id"] == "corr-10023"
+
+
+def test_cancelled_invoice_cannot_be_processed(db_path: Path) -> None:
+    with pytest.raises(InvalidInvoiceTransition):
+        update_invoice_decision(
+            db_path,
+            "INV-10028",
+            Decision.AUTO_PROCESS,
+            actor="demo-user",
+            correlation_id="corr-10028",
+        )
+
+    assert get_invoice(db_path, "INV-10028").status is InvoiceStatus.CANCELLED
+    assert list_decision_events(db_path, "INV-10028") == []
+
+
+def test_processed_invoice_cannot_be_processed_again(db_path: Path) -> None:
+    update_invoice_decision(
+        db_path,
+        "INV-10023",
+        Decision.AUTO_PROCESS,
+        actor="demo-user",
+        correlation_id="corr-first",
+    )
+
+    with pytest.raises(InvalidInvoiceTransition):
+        update_invoice_decision(
+            db_path,
+            "INV-10023",
+            Decision.AUTO_PROCESS,
+            actor="demo-user",
+            correlation_id="corr-second",
+        )
+
+    assert len(list_decision_events(db_path, "INV-10023")) == 1
+
+
+def test_seed_creates_the_six_specified_invoices(db_path: Path) -> None:
+    invoices = list_invoices(db_path)
+
+    assert [invoice.invoice_id for invoice in invoices] == [
+        "INV-10023",
+        "INV-10024",
+        "INV-10025",
+        "INV-10026",
+        "INV-10027",
+        "INV-10028",
+    ]
+
+
+def test_database_path_can_be_overridden_by_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db_path = tmp_path / "override.db"
+    monkeypatch.setenv("INVOICEOPS_DB_PATH", str(db_path))
+
+    seed_invoices()
+
+    assert db_path.exists()
+    assert len(list_invoices()) == 6
