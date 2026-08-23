@@ -89,9 +89,7 @@ def get_invoice(db_path: str | Path | None, invoice_id: str) -> Invoice | None:
     return _invoice_from_row(row) if row is not None else None
 
 
-def list_invoices(
-    db_path: str | Path | None = None, *, query: str = ""
-) -> InvoiceListResult:
+def list_invoices(db_path: str | Path | None = None, *, query: str = "") -> InvoiceListResult:
     escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     pattern = f"%{escaped_query}%"
     with _connect(db_path) as connection:

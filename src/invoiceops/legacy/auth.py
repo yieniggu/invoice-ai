@@ -50,9 +50,9 @@ def _required_environment_value(name: str) -> str:
 
 
 def credentials_are_valid(username: str, password: str, settings: AuthSettings) -> bool:
-    return secrets.compare_digest(username.encode(), settings.username.encode()) and secrets.compare_digest(
-        password.encode(), settings.password.encode()
-    )
+    return secrets.compare_digest(
+        username.encode(), settings.username.encode()
+    ) and secrets.compare_digest(password.encode(), settings.password.encode())
 
 
 def is_authenticated(request: Request) -> bool:
