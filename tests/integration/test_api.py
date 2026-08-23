@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from uuid import UUID
 
@@ -5,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from invoiceops.domain.models import InvoiceStatus
+from invoiceops.legacy import faults
 from invoiceops.legacy.app import create_app
 from invoiceops.legacy.db import _connect, get_invoice, list_decision_events
 from invoiceops.legacy.seed import seed_invoices
@@ -113,9 +115,7 @@ def test_repeated_api_decision_returns_409_without_audit_write(db_path: Path) ->
     client = TestClient(create_app(db_path))
     client.post("/api/v1/invoices/INV-10023/decision", json={"decision": "AUTO_PROCESS"})
 
-    response = client.post(
-        "/api/v1/invoices/INV-10023/decision", json={"decision": "AUTO_PROCESS"}
-    )
+    response = client.post("/api/v1/invoices/INV-10023/decision", json={"decision": "AUTO_PROCESS"})
 
     assert response.status_code == 409
     assert get_invoice(db_path, "INV-10023").status is InvoiceStatus.AUTO_PROCESSED
@@ -139,6 +139,49 @@ def test_api_decision_returns_404_without_writing(db_path: Path) -> None:
 
     assert response.status_code == 404
     assert list_decision_events(db_path) == []
+
+
+def test_unavailable_decision_api_returns_503_without_writing_and_ui_still_works(
+    db_path: Path,
+) -> None:
+    client = TestClient(create_app(db_path))
+
+    try:
+        client.post("/login", data={"username": "analyst", "password": "demo-password"})
+        controls = client.get("/admin/faults")
+        csrf_match = re.search(r'name="csrf_token" value="([^"]+)"', controls.text)
+        assert csrf_match is not None
+        enabled = client.post(
+            "/admin/faults",
+            data={
+                "fault": "decision_api_unavailable",
+                "enabled": "true",
+                "csrf_token": csrf_match.group(1),
+            },
+            follow_redirects=False,
+        )
+        response = client.post(
+            "/api/v1/invoices/INV-10023/decision", json={"decision": "AUTO_PROCESS"}
+        )
+
+        assert enabled.status_code == 303
+        assert response.status_code == 503
+        assert get_invoice(db_path, "INV-10023").status is InvoiceStatus.PENDING
+        assert list_decision_events(db_path, "INV-10023") == []
+
+        detail = client.get("/invoices/INV-10023")
+        csrf_match = re.search(r'name="csrf_token" value="([^"]+)"', detail.text)
+        assert csrf_match is not None
+        response = client.post(
+            "/invoices/INV-10023/decision",
+            data={"decision": "AUTO_PROCESS", "csrf_token": csrf_match.group(1)},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 303
+        assert get_invoice(db_path, "INV-10023").status is InvoiceStatus.AUTO_PROCESSED
+    finally:
+        faults.reset_faults()
 
 
 def insert_invoices(db_path: Path, *, count: int) -> None:

@@ -11,6 +11,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from starlette.middleware.sessions import SessionMiddleware
 
 from invoiceops.domain.models import Decision
+from invoiceops.legacy import faults
 from invoiceops.legacy.auth import (
     auth_settings,
     create_csrf_token,
@@ -82,6 +83,8 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         response: Response,
         correlation_id: Annotated[str | None, Header(alias="X-Correlation-ID")] = None,
     ) -> dict[str, str]:
+        if faults.state.decision_api_unavailable:
+            raise HTTPException(status_code=503, detail="Decision API is unavailable.")
         correlation_id = str(uuid4()) if correlation_id is None else correlation_id
         try:
             invoice = update_invoice_decision(
@@ -130,7 +133,9 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         return RedirectResponse("/invoices", status_code=303)
 
     @app.post("/logout")
-    def logout(request: Request, csrf_token: Annotated[str | None, Form()] = None) -> RedirectResponse:
+    def logout(
+        request: Request, csrf_token: Annotated[str | None, Form()] = None
+    ) -> RedirectResponse:
         require_valid_csrf_token(request, csrf_token)
         request.session.clear()
         return RedirectResponse("/login", status_code=303)
@@ -146,6 +151,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
 
     @app.get("/invoices/{invoice_id}", response_class=HTMLResponse)
     def invoice_detail(request: Request, invoice_id: str) -> HTMLResponse:
+        faults.apply_portal_latency()
         invoice = get_invoice(db_path, invoice_id)
         if invoice is None:
             return templates.TemplateResponse(
@@ -157,8 +163,56 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         return templates.TemplateResponse(
             request=request,
             name="invoice_detail.html",
-            context={"invoice": invoice, "events": reversed(list_decision_events(db_path, invoice_id))},
+            context={
+                "invoice": invoice,
+                "events": reversed(list_decision_events(db_path, invoice_id)),
+                "faults": faults.state,
+            },
         )
+
+    @app.get("/admin/faults", response_class=HTMLResponse)
+    def fault_controls(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request,
+            name="faults.html",
+            context={
+                "faults": faults.state,
+                "latency_options": sorted(faults.PORTAL_LATENCY_OPTIONS_MS),
+            },
+        )
+
+    @app.post("/admin/faults")
+    def update_fault_controls(
+        request: Request,
+        fault: Annotated[str, Form()],
+        csrf_token: Annotated[str | None, Form()] = None,
+        enabled: Annotated[str | None, Form()] = None,
+        latency_ms: Annotated[int | None, Form()] = None,
+    ) -> RedirectResponse:
+        require_valid_csrf_token(request, csrf_token)
+        if fault == "change_process_button_label":
+            if enabled not in {"true", "false"}:
+                raise HTTPException(status_code=422, detail="Invalid button label fault value.")
+            faults.state.change_process_button_label = enabled == "true"
+        elif fault == "portal_latency_ms":
+            if latency_ms not in faults.PORTAL_LATENCY_OPTIONS_MS:
+                raise HTTPException(status_code=422, detail="Invalid portal latency.")
+            faults.state.portal_latency_ms = latency_ms
+        elif fault == "decision_api_unavailable":
+            if enabled not in {"true", "false"}:
+                raise HTTPException(status_code=422, detail="Invalid Decision API fault value.")
+            faults.state.decision_api_unavailable = enabled == "true"
+        else:
+            raise HTTPException(status_code=422, detail="Unknown fault.")
+        return RedirectResponse("/admin/faults", status_code=303)
+
+    @app.post("/admin/faults/reset")
+    def reset_fault_controls(
+        request: Request, csrf_token: Annotated[str | None, Form()] = None
+    ) -> RedirectResponse:
+        require_valid_csrf_token(request, csrf_token)
+        faults.reset_faults()
+        return RedirectResponse("/admin/faults", status_code=303)
 
     @app.post("/invoices/{invoice_id}/decision")
     def decide_invoice(

@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from invoiceops.domain.models import InvoiceStatus
+from invoiceops.legacy import faults
 from invoiceops.legacy.app import create_app
 from invoiceops.legacy.db import _connect, get_invoice, list_decision_events
 from invoiceops.legacy.seed import seed_invoices
@@ -14,7 +15,7 @@ from invoiceops.legacy.seed import seed_invoices
 def test_login_required(db_path: Path) -> None:
     client = TestClient(create_app(db_path))
 
-    for path in ("/invoices", "/invoices/INV-10023", "/admin/future"):
+    for path in ("/invoices", "/invoices/INV-10023", "/admin/faults"):
         response = client.get(path, follow_redirects=False)
         assert response.status_code == 303
         assert response.headers["location"] == "/login"
@@ -66,14 +67,18 @@ def test_secure_mode_requires_explicit_non_demo_configuration(
         create_app(db_path)
 
 
-def test_mode_must_be_explicit_outside_local_demo(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_mode_must_be_explicit_outside_local_demo(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.delenv("INVOICEOPS_MODE")
 
     with pytest.raises(ValueError, match="INVOICEOPS_MODE"):
         create_app(db_path)
 
 
-def test_secure_mode_rejects_demo_session_secret(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_secure_mode_rejects_demo_session_secret(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("INVOICEOPS_MODE", "secure")
     monkeypatch.setenv("INVOICEOPS_DEMO_USERNAME", "secure-analyst")
     monkeypatch.setenv("INVOICEOPS_DEMO_PASSWORD", "secure-password")
@@ -83,9 +88,13 @@ def test_secure_mode_rejects_demo_session_secret(db_path: Path, monkeypatch: pyt
         create_app(db_path)
 
 
-def test_secure_mode_sets_secure_session_cookie(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_secure_mode_sets_secure_session_cookie(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("INVOICEOPS_MODE", "secure")
-    monkeypatch.setenv("INVOICEOPS_SESSION_SECRET", "secure-test-secret-that-is-not-the-demo-secret")
+    monkeypatch.setenv(
+        "INVOICEOPS_SESSION_SECRET", "secure-test-secret-that-is-not-the-demo-secret"
+    )
     monkeypatch.setenv("INVOICEOPS_DEMO_USERNAME", "secure-analyst")
     monkeypatch.setenv("INVOICEOPS_DEMO_PASSWORD", "secure-password")
     client = TestClient(create_app(db_path))
@@ -120,7 +129,9 @@ def test_invoice_list_discloses_when_results_are_limited(db_path: Path) -> None:
     response = client.get("/invoices")
 
     assert response.status_code == 200
-    assert "Showing the first 100 results. Refine your search to see fewer results." in response.text
+    assert (
+        "Showing the first 100 results. Refine your search to see fewer results." in response.text
+    )
 
 
 def test_invoice_detail(db_path: Path) -> None:
@@ -134,6 +145,103 @@ def test_invoice_detail(db_path: Path) -> None:
     assert 'data-testid="invoice-status">PENDING' in response.text
     assert 'data-testid="invoice-process"' in response.text
     assert 'data-testid="invoice-manual-review"' in response.text
+
+
+def test_faults_page_and_button_label_fault(db_path: Path) -> None:
+    client = authenticated_client(db_path)
+
+    try:
+        faults_page = client.get("/admin/faults")
+        csrf_token = csrf_token_from(faults_page)
+        response = client.post(
+            "/admin/faults",
+            data={
+                "fault": "change_process_button_label",
+                "enabled": "true",
+                "csrf_token": csrf_token,
+            },
+            follow_redirects=False,
+        )
+        detail = client.get("/invoices/INV-10023")
+
+        assert faults_page.status_code == 200
+        assert "Button label OFF" in faults_page.text
+        assert response.status_code == 303
+        assert 'data-testid="invoice-process"' in detail.text
+        assert ">Complete</button>" in detail.text
+    finally:
+        faults.reset_faults()
+
+
+def test_fault_controls_validate_latency_and_reset(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = authenticated_client(db_path)
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(faults, "sleep", sleep_calls.append)
+
+    try:
+        csrf_token = csrf_token_from(client.get("/admin/faults"))
+        missing_csrf = client.post(
+            "/admin/faults",
+            data={"fault": "portal_latency_ms", "latency_ms": "3000"},
+            follow_redirects=False,
+        )
+        latency = client.post(
+            "/admin/faults",
+            data={"fault": "portal_latency_ms", "latency_ms": "3000", "csrf_token": csrf_token},
+            follow_redirects=False,
+        )
+        detail = client.get("/invoices/INV-10023")
+        invalid = client.post(
+            "/admin/faults",
+            data={"fault": "portal_latency_ms", "latency_ms": "1", "csrf_token": csrf_token},
+            follow_redirects=False,
+        )
+        unknown = client.post(
+            "/admin/faults",
+            data={"fault": "unknown", "csrf_token": csrf_token},
+            follow_redirects=False,
+        )
+        button_label = client.post(
+            "/admin/faults",
+            data={
+                "fault": "change_process_button_label",
+                "enabled": "true",
+                "csrf_token": csrf_token,
+            },
+            follow_redirects=False,
+        )
+        decision_api = client.post(
+            "/admin/faults",
+            data={
+                "fault": "decision_api_unavailable",
+                "enabled": "true",
+                "csrf_token": csrf_token,
+            },
+            follow_redirects=False,
+        )
+        reset = client.post(
+            "/admin/faults/reset",
+            data={"csrf_token": csrf_token},
+            follow_redirects=False,
+        )
+        reset_page = client.get("/admin/faults")
+
+        assert missing_csrf.status_code == 403
+        assert latency.status_code == 303
+        assert detail.status_code == 200
+        assert sleep_calls == [3.0]
+        assert invalid.status_code == 422
+        assert unknown.status_code == 422
+        assert button_label.status_code == 303
+        assert decision_api.status_code == 303
+        assert reset.status_code == 303
+        assert "Latency 0 ms" in reset_page.text
+        assert "Button label OFF" in reset_page.text
+        assert "Decision API AVAILABLE" in reset_page.text
+    finally:
+        faults.reset_faults()
 
 
 def test_ui_decision(db_path: Path) -> None:

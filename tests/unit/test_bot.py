@@ -14,6 +14,7 @@ from invoiceops.automation.bot import (
     run_bot,
 )
 from invoiceops.domain.models import Decision
+from invoiceops.legacy.faults import FaultState
 
 
 class FakeLocator:
@@ -246,6 +247,25 @@ def test_prepare_invoice_decision_via_ui_reads_facts_applies_rules_and_selects_c
     assert expected_control in page.calls
     assert control.calls == page.calls
     assert not any(call[0] == "click" for call in page.calls)
+
+
+def test_testid_selector_keeps_auto_process_when_label_fault_shows_complete() -> None:
+    fault_state = FaultState(change_process_button_label=True)
+    page = FakePage(
+        {
+            "invoice-amount": "$4820.00",
+            "invoice-has-po": "Yes",
+            "invoice-three-way-match": "Yes",
+            "invoice-process": "Complete" if fault_state.change_process_button_label else "Process",
+        }
+    )
+
+    decision, control = prepare_invoice_decision_via_ui(page, locator="testid")
+
+    assert fault_state.change_process_button_label is True
+    assert decision is Decision.AUTO_PROCESS
+    assert control.selector == ("invoice-process",)
+    assert control.inner_text() == "Complete"
 
 
 @pytest.mark.parametrize(
