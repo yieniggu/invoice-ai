@@ -1,0 +1,24 @@
+services:
+  legacy-web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      INVOICEOPS_MODE: demo
+      INVOICEOPS_DB_PATH: /app/var/invoiceops.db
+    volumes:
+      - invoice-data:/app/var
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  invoice-data:
