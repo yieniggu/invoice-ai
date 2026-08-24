@@ -6,6 +6,9 @@ services:
     environment:
       INVOICEOPS_MODE: demo
       INVOICEOPS_DB_PATH: /app/var/invoiceops.db
+      INVOICEOPS_DEMO_USERNAME: analyst
+      INVOICEOPS_DEMO_PASSWORD: demo-password
+      INVOICEOPS_SESSION_SECRET: dev-only-change-me
     volumes:
       - invoice-data:/app/var
     healthcheck:
