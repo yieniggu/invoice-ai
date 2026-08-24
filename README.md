@@ -41,8 +41,9 @@ INVOICEOPS_MODE=demo uv run uvicorn invoiceops.legacy.app:app --host 127.0.0.1 -
 Open `http://127.0.0.1:8000/login`. The default demo credentials are
 `analyst` / `demo-password`.
 
-The default SQLite database is `var/invoiceops.db`. Set `INVOICEOPS_DB_PATH`
-to use a different database path.
+The default SQLite database is `var/invoiceops.db`. It is disposable local test
+data: application startup applies any pending migrations automatically. Set
+`INVOICEOPS_DB_PATH` to use a different database path.
 
 ## Docker Compose
 

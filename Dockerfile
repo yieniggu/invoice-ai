@@ -13,6 +13,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-install-project
 
 COPY README.md ./
+COPY migrations ./migrations
 COPY src ./src
 RUN uv sync --locked
 

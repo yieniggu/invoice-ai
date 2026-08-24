@@ -1,4 +1,5 @@
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -9,6 +10,28 @@ from invoiceops.domain.rules import RULE_VERSION
 
 DEFAULT_DB_PATH = Path("var/invoiceops.db")
 INVOICE_LIST_LIMIT = 100
+MIGRATION_FILENAME = re.compile(r"(?P<version>\d{3})_(?P<name>[a-z0-9]+(?:_[a-z0-9]+)*)\.sql$")
+INITIAL_TABLE_COLUMNS = {
+    "invoices": (
+        ("invoice_id", "TEXT", 0, 1),
+        ("vendor_name", "TEXT", 1, 0),
+        ("invoice_amount_cents", "INTEGER", 1, 0),
+        ("has_purchase_order", "INTEGER", 1, 0),
+        ("three_way_match", "INTEGER", 1, 0),
+        ("status", "TEXT", 1, 0),
+        ("created_at", "TEXT", 1, 0),
+        ("updated_at", "TEXT", 1, 0),
+    ),
+    "decision_events": (
+        ("id", "INTEGER", 0, 1),
+        ("invoice_id", "TEXT", 1, 0),
+        ("decision", "TEXT", 1, 0),
+        ("rule_version", "TEXT", 1, 0),
+        ("actor", "TEXT", 1, 0),
+        ("correlation_id", "TEXT", 1, 0),
+        ("created_at", "TEXT", 1, 0),
+    ),
+}
 
 
 @dataclass
@@ -36,6 +59,126 @@ def _connect(db_path: str | Path | None) -> sqlite3.Connection:
     return connection
 
 
+def _default_migrations_path() -> Path:
+    return Path(__file__).resolve().parents[3] / "migrations"
+
+
+def _migration_files(migrations_dir: Path) -> list[tuple[int, str, Path]]:
+    migrations: list[tuple[int, str, Path]] = []
+    for path in migrations_dir.glob("*.sql"):
+        match = MIGRATION_FILENAME.fullmatch(path.name)
+        if match is None:
+            raise ValueError(f"Invalid migration filename: {path.name}")
+        migrations.append((int(match["version"]), match["name"], path))
+    migrations.sort()
+    if len({version for version, _, _ in migrations}) != len(migrations):
+        raise ValueError("Migration versions must be unique")
+    return migrations
+
+
+def _migration_statements(path: Path) -> list[str]:
+    statements: list[str] = []
+    statement = ""
+    for line in path.read_text().splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            statements.append(statement)
+            statement = ""
+    if statement.strip():
+        raise ValueError(f"Migration has an incomplete statement: {path.name}")
+    return statements
+
+
+def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+    return (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)
+        ).fetchone()
+        is not None
+    )
+
+
+def _matches_initial_schema(connection: sqlite3.Connection) -> bool:
+    for table_name, expected_columns in INITIAL_TABLE_COLUMNS.items():
+        columns = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        actual_columns = tuple(
+            (column["name"], column["type"].upper(), column["notnull"], column["pk"])
+            for column in columns
+        )
+        if actual_columns != expected_columns:
+            return False
+
+    foreign_keys = connection.execute("PRAGMA foreign_key_list(decision_events)").fetchall()
+    if [
+        (
+            foreign_key["table"],
+            foreign_key["from"],
+            foreign_key["to"],
+            foreign_key["on_update"],
+            foreign_key["on_delete"],
+            foreign_key["match"],
+        )
+        for foreign_key in foreign_keys
+    ] != [("invoices", "invoice_id", "invoice_id", "NO ACTION", "NO ACTION", "NONE")]:
+        return False
+
+    table_sql = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'decision_events'"
+    ).fetchone()["sql"]
+    return "AUTOINCREMENT" in table_sql.upper()
+
+
+def run_migrations(
+    db_path: str | Path | None = None, *, migrations_dir: Path | None = None
+) -> int:
+    migrations = _migration_files(migrations_dir or _default_migrations_path())
+    with _connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.commit()
+        applied_versions = {
+            row[0] for row in connection.execute("SELECT version FROM schema_migrations")
+        }
+
+        # Legacy databases already contain the exact initial schema but no migration ledger.
+        if 1 not in applied_versions and _table_exists(connection, "invoices") and _table_exists(
+            connection, "decision_events"
+        ):
+            if not _matches_initial_schema(connection):
+                raise ValueError("Legacy schema does not match the expected initial schema")
+            connection.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                (1, "initial", datetime.now(UTC).isoformat()),
+            )
+            connection.commit()
+            applied_versions.add(1)
+
+        pending = [migration for migration in migrations if migration[0] not in applied_versions]
+        for version, name, path in pending:
+            try:
+                connection.execute("BEGIN")
+                for statement in _migration_statements(path):
+                    connection.execute(statement)
+                connection.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                    (version, name, datetime.now(UTC).isoformat()),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+
+    print(f"{len(pending)} migrations pending")
+    return len(pending)
+
+
 def _invoice_from_row(row: sqlite3.Row) -> Invoice:
     return Invoice(
         invoice_id=row["invoice_id"],
@@ -50,35 +193,7 @@ def _invoice_from_row(row: sqlite3.Row) -> Invoice:
 
 
 def init_db(db_path: str | Path | None = None) -> None:
-    with _connect(db_path) as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS invoices (
-                invoice_id TEXT PRIMARY KEY,
-                vendor_name TEXT NOT NULL,
-                invoice_amount_cents INTEGER NOT NULL,
-                has_purchase_order INTEGER NOT NULL,
-                three_way_match INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS decision_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                invoice_id TEXT NOT NULL,
-                decision TEXT NOT NULL,
-                rule_version TEXT NOT NULL,
-                actor TEXT NOT NULL,
-                correlation_id TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (invoice_id) REFERENCES invoices(invoice_id)
-            )
-            """
-        )
+    run_migrations(db_path)
 
 
 def get_invoice(db_path: str | Path | None, invoice_id: str) -> Invoice | None:
@@ -170,4 +285,5 @@ def reset_db(db_path: str | Path | None = None) -> None:
     with _connect(db_path) as connection:
         connection.execute("DROP TABLE IF EXISTS decision_events")
         connection.execute("DROP TABLE IF EXISTS invoices")
+        connection.execute("DROP TABLE IF EXISTS schema_migrations")
     init_db(db_path)
