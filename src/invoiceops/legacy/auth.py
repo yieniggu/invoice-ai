@@ -15,6 +15,7 @@ class AuthSettings:
     password: str
     session_secret: str
     secure_cookies: bool
+    allowed_decision_principals: frozenset[str]
 
 
 def auth_settings() -> AuthSettings:
@@ -25,6 +26,7 @@ def auth_settings() -> AuthSettings:
             password=os.environ.get("INVOICEOPS_DEMO_PASSWORD", DEMO_PASSWORD),
             session_secret=os.environ.get("INVOICEOPS_SESSION_SECRET", SESSION_SECRET),
             secure_cookies=False,
+            allowed_decision_principals=frozenset(),
         )
     if mode != "secure":
         raise ValueError("INVOICEOPS_MODE must be explicitly set to 'demo' or 'secure'.")
@@ -32,6 +34,7 @@ def auth_settings() -> AuthSettings:
     username = _required_environment_value("INVOICEOPS_DEMO_USERNAME")
     password = _required_environment_value("INVOICEOPS_DEMO_PASSWORD")
     session_secret = _required_environment_value("INVOICEOPS_SESSION_SECRET")
+    allowed_decision_principals = _allowed_decision_principals()
     if session_secret == SESSION_SECRET:
         raise ValueError("INVOICEOPS_SESSION_SECRET must not use the demo secret in secure mode.")
     return AuthSettings(
@@ -39,6 +42,7 @@ def auth_settings() -> AuthSettings:
         password=password,
         session_secret=session_secret,
         secure_cookies=True,
+        allowed_decision_principals=allowed_decision_principals,
     )
 
 
@@ -49,6 +53,16 @@ def _required_environment_value(name: str) -> str:
     return value
 
 
+def _allowed_decision_principals() -> frozenset[str]:
+    configured_principals = _required_environment_value("INVOICEOPS_ALLOWED_DECISION_PRINCIPALS")
+    principals = [principal.strip() for principal in configured_principals.split(",")]
+    if not all(principals):
+        raise ValueError(
+            "INVOICEOPS_ALLOWED_DECISION_PRINCIPALS must be a comma-separated list of principals."
+        )
+    return frozenset(principals)
+
+
 def credentials_are_valid(username: str, password: str, settings: AuthSettings) -> bool:
     return secrets.compare_digest(
         username.encode(), settings.username.encode()
@@ -57,6 +71,11 @@ def credentials_are_valid(username: str, password: str, settings: AuthSettings) 
 
 def is_authenticated(request: Request) -> bool:
     return request.session.get("username") is not None
+
+
+def session_principal(request: Request) -> str | None:
+    principal = request.session.get("username")
+    return principal if isinstance(principal, str) and principal else None
 
 
 def create_csrf_token() -> str:

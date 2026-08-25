@@ -3,7 +3,7 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import FastAPI, Form, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -18,6 +18,7 @@ from invoiceops.legacy.auth import (
     credentials_are_valid,
     csrf_token_is_valid,
     is_authenticated,
+    session_principal,
 )
 from invoiceops.legacy.db import (
     InvalidInvoiceTransition,
@@ -42,8 +43,30 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
     init_db(db_path)
 
+    def api_decision_actor(request: Request) -> str:
+        if not settings.secure_cookies:
+            return "api"
+        actor = session_principal(request)
+        if actor is None:
+            raise HTTPException(status_code=401, detail="Authentication is required.")
+        if actor not in settings.allowed_decision_principals:
+            raise HTTPException(status_code=403, detail="Principal is not authorized to decide invoices.")
+        return actor
+
     @app.middleware("http")
     async def require_login(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        path_segments = request.url.path.split("/")
+        is_api_decision = request.method == "POST" and (
+            len(path_segments) == 6
+            and path_segments[:4] == ["", "api", "v1", "invoices"]
+            and bool(path_segments[4])
+            and path_segments[5] == "decision"
+        )
+        if is_api_decision:
+            try:
+                request.state.api_decision_actor = api_decision_actor(request)
+            except HTTPException as exception:
+                return JSONResponse(status_code=exception.status_code, content={"detail": exception.detail})
         protected_path = request.url.path == "/invoices" or request.url.path.startswith(
             "/invoices/"
         )
@@ -81,8 +104,10 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         invoice_id: str,
         payload: ApiDecisionRequest,
         response: Response,
+        request: Request,
         correlation_id: Annotated[str | None, Header(alias="X-Correlation-ID")] = None,
     ) -> dict[str, str]:
+        actor = request.state.api_decision_actor
         if faults.state.decision_api_unavailable:
             raise HTTPException(status_code=503, detail="Decision API is unavailable.")
         correlation_id = str(uuid4()) if correlation_id is None else correlation_id
@@ -91,7 +116,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
                 db_path,
                 invoice_id,
                 payload.decision,
-                actor="api",
+                actor=actor,
                 correlation_id=correlation_id,
             )
         except LookupError:

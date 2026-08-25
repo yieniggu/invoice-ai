@@ -148,9 +148,31 @@ uv run pytest
 - `demo` defaults to the public local credentials shown above and the
   development session secret `dev-only-change-me`. It is for local demo use only.
 - `secure` requires non-empty `INVOICEOPS_DEMO_USERNAME`,
-  `INVOICEOPS_DEMO_PASSWORD`, and `INVOICEOPS_SESSION_SECRET`. It rejects the
-  demo session secret and uses `Secure`, `HttpOnly`, and `SameSite=Lax` session
-  cookie attributes. Terminate TLS at or before the application.
+  `INVOICEOPS_DEMO_PASSWORD`, `INVOICEOPS_SESSION_SECRET`, and
+  `INVOICEOPS_ALLOWED_DECISION_PRINCIPALS`. The latter is a comma-separated
+  allow-list of signed-session principals permitted to `POST`
+  `/api/v1/invoices/{invoice_id}/decision`. It rejects the demo session secret
+  and uses `Secure`, `HttpOnly`, and `SameSite=Lax` session cookie attributes.
+  Terminate TLS at or before the application.
+
+In secure mode, an anonymous request to the decision endpoint returns `401`; a
+signed session whose principal is not on the allow-list returns `403`; an
+authorized principal follows the existing decision behavior. Secure-mode audit
+records use that principal as the actor rather than `api`. In demo mode, the
+decision endpoint remains available without a session and its audit actor is
+`api`.
+
+Missing, empty, or invalid secure configuration, including an empty allow-list
+entry, fails closed during application startup.
+
+### Secure preflight and rollback
+
+Before starting in secure mode, verify that the intended signed-session
+principal is present in `INVOICEOPS_ALLOWED_DECISION_PRINCIPALS` and that all
+required secure-mode variables are set to valid, non-demo values. If access
+must be rolled back, correct the secure allow-list or other invalid secure
+configuration and restart in secure mode; do not use demo mode as a secure-mode
+fallback.
 
 The Compose credentials and session secret are demo-only values, not production
 secret management.

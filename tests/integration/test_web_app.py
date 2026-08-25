@@ -83,8 +83,28 @@ def test_secure_mode_rejects_demo_session_secret(
     monkeypatch.setenv("INVOICEOPS_DEMO_USERNAME", "secure-analyst")
     monkeypatch.setenv("INVOICEOPS_DEMO_PASSWORD", "secure-password")
     monkeypatch.setenv("INVOICEOPS_SESSION_SECRET", "dev-only-change-me")
+    monkeypatch.setenv("INVOICEOPS_ALLOWED_DECISION_PRINCIPALS", "secure-analyst")
 
     with pytest.raises(ValueError, match="must not use the demo secret"):
+        create_app(db_path)
+
+
+@pytest.mark.parametrize("allowed_principals", [None, "", "secure-analyst,"])
+def test_secure_mode_requires_valid_decision_principal_allow_list(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch, allowed_principals: str | None
+) -> None:
+    monkeypatch.setenv("INVOICEOPS_MODE", "secure")
+    monkeypatch.setenv("INVOICEOPS_DEMO_USERNAME", "secure-analyst")
+    monkeypatch.setenv("INVOICEOPS_DEMO_PASSWORD", "secure-password")
+    monkeypatch.setenv(
+        "INVOICEOPS_SESSION_SECRET", "secure-test-secret-that-is-not-the-demo-secret"
+    )
+    if allowed_principals is None:
+        monkeypatch.delenv("INVOICEOPS_ALLOWED_DECISION_PRINCIPALS", raising=False)
+    else:
+        monkeypatch.setenv("INVOICEOPS_ALLOWED_DECISION_PRINCIPALS", allowed_principals)
+
+    with pytest.raises(ValueError, match="INVOICEOPS_ALLOWED_DECISION_PRINCIPALS"):
         create_app(db_path)
 
 
@@ -97,6 +117,7 @@ def test_secure_mode_sets_secure_session_cookie(
     )
     monkeypatch.setenv("INVOICEOPS_DEMO_USERNAME", "secure-analyst")
     monkeypatch.setenv("INVOICEOPS_DEMO_PASSWORD", "secure-password")
+    monkeypatch.setenv("INVOICEOPS_ALLOWED_DECISION_PRINCIPALS", "secure-analyst")
     client = TestClient(create_app(db_path))
 
     response = client.post(

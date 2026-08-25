@@ -1,9 +1,12 @@
+import base64
+import json
 import re
 from pathlib import Path
 from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from itsdangerous import TimestampSigner
 
 from invoiceops.domain.models import InvoiceStatus
 from invoiceops.legacy import faults
@@ -111,6 +114,139 @@ def test_api_decision_generates_and_returns_correlation_id(db_path: Path) -> Non
     assert list_decision_events(db_path, "INV-10023")[0]["correlation_id"] == correlation_id
 
 
+def test_secure_api_rejects_anonymous_decision_without_mutation(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = secure_client(db_path, monkeypatch)
+
+    response = client.post(
+        "/api/v1/invoices/INV-10023/decision", json={"decision": "AUTO_PROCESS"}
+    )
+
+    assert response.status_code == 401
+    assert get_invoice(db_path, "INV-10023").status is InvoiceStatus.PENDING
+    assert list_decision_events(db_path, "INV-10023") == []
+
+
+def test_secure_api_returns_404_for_unregistered_nested_decision_path(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = secure_client(db_path, monkeypatch)
+
+    response = client.post(
+        "/api/v1/invoices/a/b/decision", json={"decision": "AUTO_PROCESS"}
+    )
+
+    assert response.status_code == 404
+
+
+def test_secure_api_rejects_authenticated_unpermitted_principal_without_mutation(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = secure_client(db_path, monkeypatch)
+    client.cookies.set(
+        "session", signed_session_cookie({"username": "unpermitted-principal"})
+    )
+
+    response = client.post(
+        "/api/v1/invoices/INV-10023/decision", json={"decision": "AUTO_PROCESS"}
+    )
+
+    assert response.status_code == 403
+    assert get_invoice(db_path, "INV-10023").status is InvoiceStatus.PENDING
+    assert list_decision_events(db_path, "INV-10023") == []
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b"{invalid-json", b'{"decision":"INVALID"}'],
+)
+def test_secure_api_rejects_anonymous_invalid_body_before_validation_or_faults(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch, content: bytes
+) -> None:
+    client = secure_client(db_path, monkeypatch)
+
+    try:
+        faults.state.decision_api_unavailable = True
+        response = client.post(
+            "/api/v1/invoices/INV-10023/decision",
+            content=content,
+            headers={"Content-Type": "application/json"},
+        )
+
+        assert response.status_code == 401
+        assert get_invoice(db_path, "INV-10023").status is InvoiceStatus.PENDING
+        assert list_decision_events(db_path, "INV-10023") == []
+    finally:
+        faults.reset_faults()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b"{invalid-json", b'{"decision":"INVALID"}'],
+)
+def test_secure_api_rejects_unpermitted_invalid_body_before_validation_or_faults(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch, content: bytes
+) -> None:
+    client = secure_client(db_path, monkeypatch)
+    client.cookies.set(
+        "session", signed_session_cookie({"username": "unpermitted-principal"})
+    )
+
+    try:
+        faults.state.decision_api_unavailable = True
+        response = client.post(
+            "/api/v1/invoices/INV-10023/decision",
+            content=content,
+            headers={"Content-Type": "application/json"},
+        )
+
+        assert response.status_code == 403
+        assert get_invoice(db_path, "INV-10023").status is InvoiceStatus.PENDING
+        assert list_decision_events(db_path, "INV-10023") == []
+    finally:
+        faults.reset_faults()
+
+
+def test_secure_api_accepts_authorized_signed_session_and_audits_actor(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = secure_client(db_path, monkeypatch)
+    client.cookies.set("session", signed_session_cookie({"username": "secure-analyst"}))
+    correlation_id = "secure-request-123"
+
+    response = client.post(
+        "/api/v1/invoices/INV-10023/decision",
+        headers={"X-Correlation-ID": correlation_id},
+        json={"decision": "AUTO_PROCESS"},
+    )
+
+    assert response.status_code == 200
+    assert get_invoice(db_path, "INV-10023").status is InvoiceStatus.AUTO_PROCESSED
+    events = list_decision_events(db_path, "INV-10023")
+    assert len(events) == 1
+    assert events[0]["actor"] == "secure-analyst"
+    assert events[0]["correlation_id"] == correlation_id
+
+
+def test_demo_mode_preserves_existing_behavior(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INVOICEOPS_MODE", "demo")
+    correlation_id = "demo-request-123"
+
+    response = TestClient(create_app(db_path)).post(
+        "/api/v1/invoices/INV-10023/decision",
+        headers={"X-Correlation-ID": correlation_id},
+        json={"decision": "AUTO_PROCESS"},
+    )
+
+    assert response.status_code == 200
+    assert get_invoice(db_path, "INV-10023").status is InvoiceStatus.AUTO_PROCESSED
+    events = list_decision_events(db_path, "INV-10023")
+    assert len(events) == 1
+    assert events[0]["actor"] == "api"
+    assert events[0]["correlation_id"] == correlation_id
+
+
 def test_repeated_api_decision_returns_409_without_audit_write(db_path: Path) -> None:
     client = TestClient(create_app(db_path))
     client.post("/api/v1/invoices/INV-10023/decision", json={"decision": "AUTO_PROCESS"})
@@ -208,6 +344,20 @@ def insert_invoices(db_path: Path, *, count: int) -> None:
             """,
             rows,
         )
+
+
+def secure_client(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    monkeypatch.setenv("INVOICEOPS_MODE", "secure")
+    monkeypatch.setenv("INVOICEOPS_DEMO_USERNAME", "secure-analyst")
+    monkeypatch.setenv("INVOICEOPS_DEMO_PASSWORD", "secure-password")
+    monkeypatch.setenv("INVOICEOPS_SESSION_SECRET", "secure-test-session-secret")
+    monkeypatch.setenv("INVOICEOPS_ALLOWED_DECISION_PRINCIPALS", "secure-analyst")
+    return TestClient(create_app(db_path))
+
+
+def signed_session_cookie(session: dict[str, str]) -> str:
+    payload = base64.b64encode(json.dumps(session).encode("utf-8"))
+    return TimestampSigner("secure-test-session-secret").sign(payload).decode("utf-8")
 
 
 @pytest.fixture
