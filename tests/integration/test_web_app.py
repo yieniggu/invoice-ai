@@ -156,16 +156,27 @@ def test_invoice_list_discloses_when_results_are_limited(db_path: Path) -> None:
 
 
 def test_invoice_detail(db_path: Path) -> None:
-    response = authenticated_client(db_path).get("/invoices/INV-10023")
+    response = authenticated_client(db_path).get("/invoices/INV-10030")
 
     assert response.status_code == 200
-    assert 'data-testid="invoice-id">INV-10023' in response.text
-    assert 'data-testid="invoice-amount">$4820.00' in response.text
+    assert 'data-testid="invoice-id">INV-10030' in response.text
+    assert 'data-testid="invoice-amount">$4200.00' in response.text
     assert 'data-testid="invoice-has-po">Yes' in response.text
     assert 'data-testid="invoice-three-way-match">Yes' in response.text
     assert 'data-testid="invoice-status">PENDING' in response.text
     assert 'data-testid="invoice-process"' in response.text
     assert 'data-testid="invoice-manual-review"' in response.text
+    assert "<h2>Risk Context</h2>" in response.text
+    assert "Vendor tenure" in response.text
+    assert "12 days" in response.text
+    assert "Previous incidents" in response.text
+    assert ">4<" in response.text
+    assert "Bank account changed" in response.text
+    assert ">Yes<" in response.text
+    assert "Amount vs vendor median" in response.text
+    assert ">3.40x<" in response.text
+    assert "Country risk" in response.text
+    assert ">High<" in response.text
 
 
 def test_faults_page_and_button_label_fault(db_path: Path) -> None:

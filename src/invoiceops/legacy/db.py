@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from invoiceops.domain.models import Decision, Invoice, InvoiceStatus
+from invoiceops.domain.models import CountryRisk, Decision, Invoice, InvoiceStatus
 from invoiceops.domain.rules import RULE_VERSION
 
 DEFAULT_DB_PATH = Path("var/invoiceops.db")
@@ -128,9 +128,7 @@ def _matches_initial_schema(connection: sqlite3.Connection) -> bool:
     return "AUTOINCREMENT" in table_sql.upper()
 
 
-def run_migrations(
-    db_path: str | Path | None = None, *, migrations_dir: Path | None = None
-) -> int:
+def run_migrations(db_path: str | Path | None = None, *, migrations_dir: Path | None = None) -> int:
     migrations = _migration_files(migrations_dir or _default_migrations_path())
     with _connect(db_path) as connection:
         connection.execute(
@@ -148,8 +146,10 @@ def run_migrations(
         }
 
         # Legacy databases already contain the exact initial schema but no migration ledger.
-        if 1 not in applied_versions and _table_exists(connection, "invoices") and _table_exists(
-            connection, "decision_events"
+        if (
+            1 not in applied_versions
+            and _table_exists(connection, "invoices")
+            and _table_exists(connection, "decision_events")
         ):
             if not _matches_initial_schema(connection):
                 raise ValueError("Legacy schema does not match the expected initial schema")
@@ -189,6 +189,11 @@ def _invoice_from_row(row: sqlite3.Row) -> Invoice:
         status=InvoiceStatus(row["status"]),
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
+        vendor_tenure_days=row["vendor_tenure_days"],
+        previous_incidents_12m=row["previous_incidents_12m"],
+        bank_account_recently_changed=bool(row["bank_account_recently_changed"]),
+        amount_vs_vendor_median=row["amount_vs_vendor_median"],
+        country_risk=CountryRisk(row["country_risk"]),
     )
 
 

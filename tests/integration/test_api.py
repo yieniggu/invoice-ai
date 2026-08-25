@@ -54,10 +54,42 @@ def test_invoice_list_filters_by_query_and_documents_parameter(db_path: Path) ->
 
 
 def test_get_invoice_returns_json_invoice(db_path: Path) -> None:
-    response = TestClient(create_app(db_path)).get("/api/invoices/INV-10023")
+    client = TestClient(create_app(db_path))
+    response = client.get("/api/invoices/INV-10030")
+    list_response = client.get("/api/invoices")
 
     assert response.status_code == 200
-    assert response.json()["invoice_id"] == "INV-10023"
+    assert response.json() == {
+        "invoice_id": "INV-10030",
+        "vendor_name": "Risky Ventures",
+        "invoice_amount_cents": 420000,
+        "has_purchase_order": True,
+        "three_way_match": True,
+        "vendor_tenure_days": 12,
+        "previous_incidents_12m": 4,
+        "bank_account_recently_changed": True,
+        "amount_vs_vendor_median": 3.4,
+        "country_risk": "high",
+        "status": "PENDING",
+        "created_at": response.json()["created_at"],
+        "updated_at": response.json()["updated_at"],
+    }
+    invoice = next(
+        item for item in list_response.json()["invoices"] if item["invoice_id"] == "INV-10030"
+    )
+    assert {
+        "vendor_tenure_days": invoice["vendor_tenure_days"],
+        "previous_incidents_12m": invoice["previous_incidents_12m"],
+        "bank_account_recently_changed": invoice["bank_account_recently_changed"],
+        "amount_vs_vendor_median": invoice["amount_vs_vendor_median"],
+        "country_risk": invoice["country_risk"],
+    } == {
+        "vendor_tenure_days": 12,
+        "previous_incidents_12m": 4,
+        "bank_account_recently_changed": True,
+        "amount_vs_vendor_median": 3.4,
+        "country_risk": "high",
+    }
 
 
 def test_get_invoice_returns_404_for_unknown_invoice(db_path: Path) -> None:
@@ -119,9 +151,7 @@ def test_secure_api_rejects_anonymous_decision_without_mutation(
 ) -> None:
     client = secure_client(db_path, monkeypatch)
 
-    response = client.post(
-        "/api/v1/invoices/INV-10023/decision", json={"decision": "AUTO_PROCESS"}
-    )
+    response = client.post("/api/v1/invoices/INV-10023/decision", json={"decision": "AUTO_PROCESS"})
 
     assert response.status_code == 401
     assert get_invoice(db_path, "INV-10023").status is InvoiceStatus.PENDING
@@ -133,9 +163,7 @@ def test_secure_api_returns_404_for_unregistered_nested_decision_path(
 ) -> None:
     client = secure_client(db_path, monkeypatch)
 
-    response = client.post(
-        "/api/v1/invoices/a/b/decision", json={"decision": "AUTO_PROCESS"}
-    )
+    response = client.post("/api/v1/invoices/a/b/decision", json={"decision": "AUTO_PROCESS"})
 
     assert response.status_code == 404
 
@@ -144,13 +172,9 @@ def test_secure_api_rejects_authenticated_unpermitted_principal_without_mutation
     db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client = secure_client(db_path, monkeypatch)
-    client.cookies.set(
-        "session", signed_session_cookie({"username": "unpermitted-principal"})
-    )
+    client.cookies.set("session", signed_session_cookie({"username": "unpermitted-principal"}))
 
-    response = client.post(
-        "/api/v1/invoices/INV-10023/decision", json={"decision": "AUTO_PROCESS"}
-    )
+    response = client.post("/api/v1/invoices/INV-10023/decision", json={"decision": "AUTO_PROCESS"})
 
     assert response.status_code == 403
     assert get_invoice(db_path, "INV-10023").status is InvoiceStatus.PENDING
@@ -189,9 +213,7 @@ def test_secure_api_rejects_unpermitted_invalid_body_before_validation_or_faults
     db_path: Path, monkeypatch: pytest.MonkeyPatch, content: bytes
 ) -> None:
     client = secure_client(db_path, monkeypatch)
-    client.cookies.set(
-        "session", signed_session_cookie({"username": "unpermitted-principal"})
-    )
+    client.cookies.set("session", signed_session_cookie({"username": "unpermitted-principal"}))
 
     try:
         faults.state.decision_api_unavailable = True
@@ -229,7 +251,9 @@ def test_secure_api_accepts_authorized_signed_session_and_audits_actor(
     assert events[0]["correlation_id"] == correlation_id
 
 
-def test_demo_mode_preserves_existing_behavior(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_demo_mode_preserves_existing_behavior(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("INVOICEOPS_MODE", "demo")
     correlation_id = "demo-request-123"
 

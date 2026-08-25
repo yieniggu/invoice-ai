@@ -74,15 +74,19 @@ docker compose down -v
 ## Reset demo data
 
 Resetting drops the `invoices` and `decision_events` SQLite tables, then creates
-the schema and inserts the six seed invoices. It permanently discards local
+schema version 2 and inserts the eight seed invoices. It permanently discards local
 decisions and audit events in the selected database.
 
 ```bash
 INVOICEOPS_MODE=demo uv run python scripts/reset_demo.py
 ```
 
-The seed invoice IDs are `INV-10023` through `INV-10028`. `INV-10028` starts in
-the `CANCELLED` state; the other seed invoices start as `PENDING`.
+The seed invoice IDs are `INV-10023` through `INV-10030`. `INV-10028` starts in
+the `CANCELLED` state; the other seed invoices start as `PENDING`. Invoice detail
+and invoice API responses include risk context for future ML work: vendor tenure,
+previous incidents, bank-account change, amount versus vendor median, and country risk.
+`INV-10029` and `INV-10030` both meet Rule v1's `AUTO_PROCESS` inputs but show
+contrasting risk context for the class demo.
 
 ## Web portal and bot
 

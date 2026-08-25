@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from invoiceops.domain.models import Decision, InvoiceStatus
+from invoiceops.domain.models import CountryRisk, Decision, InvoiceStatus
 from invoiceops.legacy.db import (
     InvalidInvoiceTransition,
     _connect,
@@ -75,7 +75,7 @@ def test_processed_invoice_cannot_be_processed_again(db_path: Path) -> None:
     assert len(list_decision_events(db_path, "INV-10023")) == 1
 
 
-def test_seed_creates_the_six_specified_invoices(db_path: Path) -> None:
+def test_seed_creates_the_eight_specified_invoices_with_risk_context(db_path: Path) -> None:
     result = list_invoices(db_path)
 
     assert [invoice.invoice_id for invoice in result.invoices] == [
@@ -85,8 +85,28 @@ def test_seed_creates_the_six_specified_invoices(db_path: Path) -> None:
         "INV-10026",
         "INV-10027",
         "INV-10028",
+        "INV-10029",
+        "INV-10030",
     ]
     assert result.has_more is False
+    low_risk = get_invoice(db_path, "INV-10029")
+    high_risk = get_invoice(db_path, "INV-10030")
+    assert low_risk is not None
+    assert high_risk is not None
+    assert (
+        low_risk.vendor_tenure_days,
+        low_risk.previous_incidents_12m,
+        low_risk.bank_account_recently_changed,
+        low_risk.amount_vs_vendor_median,
+        low_risk.country_risk,
+    ) == (2200, 0, False, 1.05, CountryRisk.LOW)
+    assert (
+        high_risk.vendor_tenure_days,
+        high_risk.previous_incidents_12m,
+        high_risk.bank_account_recently_changed,
+        high_risk.amount_vs_vendor_median,
+        high_risk.country_risk,
+    ) == (12, 4, True, 3.4, CountryRisk.HIGH)
 
 
 def test_invoice_list_is_limited_and_reports_when_more_results_exist(db_path: Path) -> None:
@@ -114,7 +134,7 @@ def test_database_path_can_be_overridden_by_environment(
     seed_invoices()
 
     assert db_path.exists()
-    assert len(list_invoices().invoices) == 6
+    assert len(list_invoices().invoices) == 8
 
 
 def insert_invoices(db_path: Path, *, count: int) -> None:

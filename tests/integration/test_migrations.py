@@ -32,18 +32,22 @@ def test_migrations_apply_in_order(tmp_path: Path) -> None:
 def test_migrations_are_idempotent(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     db_path = tmp_path / "invoiceops.db"
 
-    assert run_migrations(db_path) == 1
+    assert run_migrations(db_path) == 2
     assert run_migrations(db_path) == 0
 
     assert "0 migrations pending" in capsys.readouterr().out
     with _connect(db_path) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
 
 
-def test_init_db_applies_pending_migrations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_init_db_applies_pending_migrations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     migrations_dir = tmp_path / "migrations"
     migrations_dir.mkdir()
-    (migrations_dir / "001_initial.sql").write_text("CREATE TABLE initialized_by_migration (id INTEGER);\n")
+    (migrations_dir / "001_initial.sql").write_text(
+        "CREATE TABLE initialized_by_migration (id INTEGER);\n"
+    )
     db_path = tmp_path / "invoiceops.db"
     monkeypatch.setattr("invoiceops.legacy.db._default_migrations_path", lambda: migrations_dir)
 
@@ -76,6 +80,11 @@ def test_initial_migration_reproduces_legacy_schema(tmp_path: Path) -> None:
         "status",
         "created_at",
         "updated_at",
+        "vendor_tenure_days",
+        "previous_incidents_12m",
+        "bank_account_recently_changed",
+        "amount_vs_vendor_median",
+        "country_risk",
     ]
     assert [row["name"] for row in events] == [
         "id",
@@ -101,7 +110,9 @@ def test_invalid_migration_filename_is_rejected(tmp_path: Path) -> None:
 def test_failed_migration_does_not_record_version(tmp_path: Path) -> None:
     migrations_dir = tmp_path / "migrations"
     migrations_dir.mkdir()
-    (migrations_dir / "001_bad.sql").write_text("CREATE TABLE incomplete (id INTEGER);\nINVALID SQL;\n")
+    (migrations_dir / "001_bad.sql").write_text(
+        "CREATE TABLE incomplete (id INTEGER);\nINVALID SQL;\n"
+    )
     db_path = tmp_path / "invoiceops.db"
 
     with pytest.raises(sqlite3.OperationalError):
@@ -109,9 +120,12 @@ def test_failed_migration_does_not_record_version(tmp_path: Path) -> None:
 
     with _connect(db_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 0
-        assert connection.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'incomplete'"
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'incomplete'"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_legacy_database_is_adopted_without_changing_data(tmp_path: Path) -> None:
@@ -145,17 +159,31 @@ def test_legacy_database_is_adopted_without_changing_data(tmp_path: Path) -> Non
             )
             """
         )
-        before = connection.execute("SELECT sql FROM sqlite_master WHERE name = 'invoices'").fetchone()[0]
+        before = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'invoices'"
+        ).fetchone()[0]
 
-    assert run_migrations(db_path) == 0
+    assert run_migrations(db_path) == 1
 
     with _connect(db_path) as connection:
-        after = connection.execute("SELECT sql FROM sqlite_master WHERE name = 'invoices'").fetchone()[0]
+        after = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'invoices'"
+        ).fetchone()[0]
         count = connection.execute("SELECT COUNT(*) FROM invoices").fetchone()[0]
-        version = connection.execute("SELECT version FROM schema_migrations").fetchone()[0]
-    assert after == before
+        versions = connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        risk_context = connection.execute(
+            """
+            SELECT vendor_tenure_days, previous_incidents_12m, bank_account_recently_changed,
+                   amount_vs_vendor_median, country_risk
+            FROM invoices WHERE invoice_id = 'INV-LEGACY'
+            """
+        ).fetchone()
+    assert after != before
     assert count == 1
-    assert version == 1
+    assert [row["version"] for row in versions] == [1, 2]
+    assert tuple(risk_context) == (0, 0, 0, 1.0, "medium")
 
 
 def test_legacy_database_with_divergent_schema_is_not_adopted(tmp_path: Path) -> None:
@@ -195,7 +223,7 @@ def test_create_app_initializes_an_empty_database(tmp_path: Path) -> None:
     create_app(db_path)
 
     with _connect(db_path) as connection:
-        assert connection.execute("SELECT version FROM schema_migrations").fetchone()[0] == 1
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
         assert connection.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 0
 
 
@@ -213,6 +241,6 @@ def test_reset_demo_migrates_then_seeds(tmp_path: Path, monkeypatch: pytest.Monk
     )
 
     with _connect(db_path) as connection:
-        assert connection.execute("SELECT version FROM schema_migrations").fetchone()[0] == 1
-        assert connection.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 6
-    assert "Invoices: 6" in result.stdout
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 8
+    assert "Invoices: 8" in result.stdout
