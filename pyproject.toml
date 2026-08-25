@@ -15,6 +15,9 @@ dependencies = [
     "python-multipart",
     "itsdangerous",
     "playwright",
+    "numpy",
+    "pandas",
+    "scikit-learn",
 ]
 
 [dependency-groups]
@@ -28,7 +31,6 @@ teaching = [
     "ipykernel",
     "matplotlib",
     "nbconvert",
-    "scikit-learn",
 ]
 
 [tool.hatch.build.targets.wheel]
