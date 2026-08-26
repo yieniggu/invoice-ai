@@ -7802,7 +7802,39 @@ a.anchor-link {
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h1 id="Serving,-policy,-and-audit">Serving, policy, and audit<a class="anchor-link" href="#Serving,-policy,-and-audit">¶</a></h1><p>Run notebook 04 first. It prepares the isolated Registry state used here. This notebook demonstrates the actual path: <strong>champion alias -&gt; Model API -&gt; probability -&gt; Policy -&gt; model_evaluation</strong>. Registry state and runtime state are deliberately separate: the API loads its model once at startup.</p>
+<h1 id="Serving,-Policy-y-auditor%C3%ADa:-del-modelo-a-una-evidencia-verificable">Serving, Policy y auditoría: del modelo a una evidencia verificable<a class="anchor-link" href="#Serving,-Policy-y-auditor%C3%ADa:-del-modelo-a-una-evidencia-verificable">¶</a></h1><p>Ejecuta primero el Notebook 04. Allí se decide qué <strong>versión</strong> es <code>champion</code>; aquí comprobamos qué ocurre cuando un proceso real la carga y atiende solicitudes. Antes del código, separa estos cuatro sustantivos:</p>
+<table>
+<thead>
+<tr>
+<th>Concepto</th>
+<th>Pregunta que responde</th>
+<th>No es</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Registry</strong></td>
+<td>¿Qué versión registrada apunta hoy a <code>champion</code>?</td>
+<td>Un servidor ejecutándose.</td>
+</tr>
+<tr>
+<td><strong>Model API</strong></td>
+<td>¿Qué copia del modelo cargó este proceso al arrancar?</td>
+<td>El Registry ni una regla de negocio.</td>
+</tr>
+<tr>
+<td><strong>Policy</strong></td>
+<td>Dada una probabilidad, ¿qué recomendación contractual corresponde?</td>
+<td>La probabilidad ni la decisión final.</td>
+</tr>
+<tr>
+<td><strong>Audit</strong></td>
+<td>¿Qué evidencia deja cada evaluación?</td>
+<td>Una métrica de MLflow ni una decisión final.</td>
+</tr>
+</tbody>
+</table>
+<p>Ruta que observaremos: <code>champion</code> en Registry -&gt; Model API -&gt; probabilidad -&gt; Policy -&gt; <code>model_evaluations</code>. El Registry y el runtime se mantienen separados deliberadamente: la API carga una sola vez al iniciar.</p>
 </div>
 </div>
 </div>
@@ -7814,7 +7846,9 @@ a.anchor-link {
 <div class="jp-InputPrompt jp-InputArea-prompt">In [1]:</div>
 <div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="cm-editor cm-s-jupyter">
-<div class="highlight hl-ipython3"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+<div class="highlight hl-ipython3"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">contextlib</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">io</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">socket</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">subprocess</span>
@@ -7825,7 +7859,7 @@ a.anchor-link {
 <span class="kn">import</span><span class="w"> </span><span class="nn">httpx</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">mlflow</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">IPython.display</span><span class="w"> </span><span class="kn">import</span> <span class="n">display</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">IPython.display</span><span class="w"> </span><span class="kn">import</span> <span class="n">Markdown</span><span class="p">,</span> <span class="n">display</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">mlflow.tracking</span><span class="w"> </span><span class="kn">import</span> <span class="n">MlflowClient</span>
 
 <span class="n">PROJECT_ROOT</span> <span class="o">=</span> <span class="n">Path</span><span class="o">.</span><span class="n">cwd</span><span class="p">()</span><span class="o">.</span><span class="n">resolve</span><span class="p">()</span>
@@ -7833,10 +7867,11 @@ a.anchor-link {
     <span class="n">PROJECT_ROOT</span> <span class="o">=</span> <span class="n">PROJECT_ROOT</span><span class="o">.</span><span class="n">parent</span>
 <span class="k">if</span> <span class="nb">str</span><span class="p">(</span><span class="n">PROJECT_ROOT</span><span class="p">)</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">sys</span><span class="o">.</span><span class="n">path</span><span class="p">:</span>
     <span class="n">sys</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">insert</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="n">PROJECT_ROOT</span><span class="p">))</span>
-<span class="n">DEMO_ROOT</span> <span class="o">=</span> <span class="n">PROJECT_ROOT</span> <span class="o">/</span> <span class="s1">'var'</span> <span class="o">/</span> <span class="s1">'t23_5_demo'</span>
+<span class="c1"># El override permite una demo aislada sin tocar var/t23_5_demo/.</span>
+<span class="n">DEMO_ROOT</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">'INVOICEOPS_NOTEBOOK_DEMO_ROOT'</span><span class="p">,</span> <span class="n">PROJECT_ROOT</span> <span class="o">/</span> <span class="s1">'var'</span> <span class="o">/</span> <span class="s1">'t23_5_demo'</span><span class="p">))</span><span class="o">.</span><span class="n">resolve</span><span class="p">()</span>
 <span class="n">STATE_PATH</span> <span class="o">=</span> <span class="n">DEMO_ROOT</span> <span class="o">/</span> <span class="s1">'state.json'</span>
 <span class="k">if</span> <span class="ow">not</span> <span class="n">STATE_PATH</span><span class="o">.</span><span class="n">exists</span><span class="p">():</span>
-    <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s1">'Run notebook 04 first to prepare the isolated demo Registry.'</span><span class="p">)</span>
+    <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s1">'Ejecuta primero el Notebook 04 con el mismo INVOICEOPS_NOTEBOOK_DEMO_ROOT.'</span><span class="p">)</span>
 <span class="n">state</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">STATE_PATH</span><span class="o">.</span><span class="n">read_text</span><span class="p">())</span>
 <span class="n">state</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="s1">'completed_actions'</span><span class="p">,</span> <span class="p">{})</span>
 <span class="n">state</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="s1">'evaluations'</span><span class="p">,</span> <span class="p">{})</span>
@@ -7844,7 +7879,7 @@ a.anchor-link {
 <span class="n">DEMO_DB</span> <span class="o">=</span> <span class="n">DEMO_ROOT</span> <span class="o">/</span> <span class="s1">'invoiceops.db'</span>
 <span class="n">mlflow</span><span class="o">.</span><span class="n">set_tracking_uri</span><span class="p">(</span><span class="n">TRACKING_URI</span><span class="p">)</span>
 <span class="n">client</span> <span class="o">=</span> <span class="n">MlflowClient</span><span class="p">()</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s1">'Using isolated Registry at </span><span class="si">{</span><span class="n">TRACKING_URI</span><span class="si">}</span><span class="s1">'</span><span class="p">)</span>
+<span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="sa">f</span><span class="s1">'**Demo aislada preparada.** Registry/Tracking: `</span><span class="si">{</span><span class="n">TRACKING_URI</span><span class="si">}</span><span class="s1">`. Auditoría SQLite: `</span><span class="si">{</span><span class="n">DEMO_DB</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s1">`.'</span><span class="p">))</span>
 </pre></div>
 </div>
 </div>
@@ -7856,10 +7891,24 @@ a.anchor-link {
 <div class="jp-OutputArea jp-Cell-outputArea">
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
-<div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre>Using isolated Registry at sqlite:////Users/admin/Desktop/elements/usach/diplomado/invoice_ops/invoice-ai/var/t23_5_demo/mlflow.db
-</pre>
+<div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-OutputArea-output" data-mime-type="text/markdown" tabindex="0">
+<p><strong>Demo aislada preparada.</strong> Registry/Tracking: <code>sqlite:////private/var/folders/y3/m1xh54ds39x7c15dzzngkh1r0000gn/T/opencode/invoice-ai-notebook-lesson-final/mlflow.db</code>. Auditoría SQLite: <code>invoiceops.db</code>.</p>
 </div>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=resolve-champion-explained">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<h2 id="1.-Resolver-el-champion">1. Resolver el champion<a class="anchor-link" href="#1.-Resolver-el-champion">¶</a></h2><p><strong>Qué estás mirando:</strong> el alias móvil <code>champion</code> del Registry y la identidad de la versión a la que apunta ahora.</p>
+<p><strong>Por qué importa:</strong> un alias permite hablar de la versión aprobada sin escribir un número fijo. Sin embargo, saber el alias no prueba todavía qué modelo usa un proceso en memoria.</p>
+<p><strong>Qué ejecuta esta celda:</strong> consulta MLflow para resolver <code>models:/invoice-review@champion</code> y recupera su run.</p>
+<p><strong>Qué deberías comprobar:</strong> nombre, versión, run y tipo del modelo aparecen en una tabla.</p>
+<p><strong>Qué significa si falla:</strong> 04 no terminó, el alias no existe o este notebook no usa el mismo <code>DEMO_ROOT</code>. No inventes una versión: vuelve a verificar el Registry.</p>
 </div>
 </div>
 </div>
@@ -7875,11 +7924,11 @@ a.anchor-link {
 
 <span class="n">champion</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">get_model_version_by_alias</span><span class="p">(</span><span class="n">MODEL_NAME</span><span class="p">,</span> <span class="s1">'champion'</span><span class="p">)</span>
 <span class="n">champion_run</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">get_run</span><span class="p">(</span><span class="n">champion</span><span class="o">.</span><span class="n">run_id</span><span class="p">)</span>
-<span class="n">display</span><span class="p">(</span><span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">([{</span>
-    <span class="s1">'model_name'</span><span class="p">:</span> <span class="n">MODEL_NAME</span><span class="p">,</span> <span class="s1">'model_version'</span><span class="p">:</span> <span class="n">champion</span><span class="o">.</span><span class="n">version</span><span class="p">,</span> <span class="s1">'run_id'</span><span class="p">:</span> <span class="n">champion</span><span class="o">.</span><span class="n">run_id</span><span class="p">,</span>
-    <span class="s1">'model_type'</span><span class="p">:</span> <span class="n">champion_run</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">'model_type'</span><span class="p">),</span>
-<span class="p">}]))</span>
-<span class="nb">print</span><span class="p">(</span><span class="s1">'Registry alias resolved dynamically; no version number is hardcoded.'</span><span class="p">)</span>
+<span class="n">champion_table</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">([{</span>
+    <span class="s1">'Nombre'</span><span class="p">:</span> <span class="n">MODEL_NAME</span><span class="p">,</span> <span class="s1">'Versión champion'</span><span class="p">:</span> <span class="sa">f</span><span class="s1">'v</span><span class="si">{</span><span class="n">champion</span><span class="o">.</span><span class="n">version</span><span class="si">}</span><span class="s1">'</span><span class="p">,</span> <span class="s1">'Run'</span><span class="p">:</span> <span class="n">champion</span><span class="o">.</span><span class="n">run_id</span><span class="p">,</span>
+    <span class="s1">'Tipo'</span><span class="p">:</span> <span class="n">champion_run</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">'model_type'</span><span class="p">,</span> <span class="s1">'desconocido'</span><span class="p">),</span>
+<span class="p">}])</span>
+<span class="n">display</span><span class="p">(</span><span class="n">champion_table</span><span class="p">)</span>
 </pre></div>
 </div>
 </div>
@@ -7910,18 +7959,18 @@ a.anchor-link {
 <thead>
 <tr style="text-align: right;">
 <th></th>
-<th>model_name</th>
-<th>model_version</th>
-<th>run_id</th>
-<th>model_type</th>
+<th>Nombre</th>
+<th>Versión champion</th>
+<th>Run</th>
+<th>Tipo</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <th>0</th>
 <td>invoice-review</td>
-<td>2</td>
-<td>dddca7b27b374e7fa3a30d695ee7228d</td>
+<td>v2</td>
+<td>3f0c5e489c074ae6a539976fb2285fa3</td>
 <td>random_forest</td>
 </tr>
 </tbody>
@@ -7929,23 +7978,69 @@ a.anchor-link {
 </div>
 </div>
 </div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=mlflow-ui">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<h2 id="Ver-esta-ejecuci%C3%B3n-en-MLflow">Ver esta ejecución en MLflow<a class="anchor-link" href="#Ver-esta-ejecuci%C3%B3n-en-MLflow">¶</a></h2><p>MLflow UI es un <strong>visor del mismo backend</strong> que usa esta demo; no crea una copia de runs ni del Registry. Abre otra terminal y ejecuta el comando que imprime la celda siguiente. No inicia procesos automáticamente ni supone un puerto.</p>
+<p>En la UI revisa el experimento <code>invoice-risk</code>, sus runs, métricas, parámetros, artifacts y, en Models, las versiones y aliases de <code>invoice-review</code>. Este notebook también escribe auditoría en SQLite: las filas <code>model_evaluations</code>, <code>source</code>, <code>reason</code> y <code>correlation_id</code> se observan en las tablas del notebook o el portal, <strong>no</strong> como métricas de MLflow.</p>
+</div>
+</div>
+</div>
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell" id="cell-id=mlflow-ui-commands">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [3]:</div>
+<div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="cm-editor cm-s-jupyter">
+<div class="highlight hl-ipython3"><pre><span></span><span class="n">backend</span> <span class="o">=</span> <span class="n">DEMO_ROOT</span> <span class="o">/</span> <span class="s1">'mlflow.db'</span>
+<span class="n">artifacts</span> <span class="o">=</span> <span class="n">DEMO_ROOT</span> <span class="o">/</span> <span class="s1">'mlflow-artifacts'</span>
+<span class="nb">print</span><span class="p">(</span><span class="s1">'macOS/Linux (desde la raíz del repositorio):'</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"uv run mlflow server --backend-store-uri 'sqlite:///</span><span class="si">{</span><span class="n">backend</span><span class="si">}</span><span class="s2">' --default-artifact-root '</span><span class="si">{</span><span class="n">artifacts</span><span class="si">}</span><span class="s2">' --host 127.0.0.1 --port &lt;puerto-libre&gt;"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s1">'PowerShell (desde la raíz del repositorio):'</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s1">'uv run mlflow server --backend-store-uri "sqlite:///</span><span class="si">{</span><span class="n">backend</span><span class="si">}</span><span class="s1">" --default-artifact-root "</span><span class="si">{</span><span class="n">artifacts</span><span class="si">}</span><span class="s1">" --host 127.0.0.1 --port &lt;puerto-libre&gt;'</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s1">'Luego abre: http://127.0.0.1:&lt;puerto-libre&gt;'</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell-outputWrapper">
+<div class="jp-Collapser jp-OutputCollapser jp-Cell-outputCollapser">
+</div>
+<div class="jp-OutputArea jp-Cell-outputArea">
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre>Registry alias resolved dynamically; no version number is hardcoded.
+<pre>macOS/Linux (desde la raíz del repositorio):
+uv run mlflow server --backend-store-uri 'sqlite:////private/var/folders/y3/m1xh54ds39x7c15dzzngkh1r0000gn/T/opencode/invoice-ai-notebook-lesson-final/mlflow.db' --default-artifact-root '/private/var/folders/y3/m1xh54ds39x7c15dzzngkh1r0000gn/T/opencode/invoice-ai-notebook-lesson-final/mlflow-artifacts' --host 127.0.0.1 --port &lt;puerto-libre&gt;
+PowerShell (desde la raíz del repositorio):
+uv run mlflow server --backend-store-uri "sqlite:////private/var/folders/y3/m1xh54ds39x7c15dzzngkh1r0000gn/T/opencode/invoice-ai-notebook-lesson-final/mlflow.db" --default-artifact-root "/private/var/folders/y3/m1xh54ds39x7c15dzzngkh1r0000gn/T/opencode/invoice-ai-notebook-lesson-final/mlflow-artifacts" --host 127.0.0.1 --port &lt;puerto-libre&gt;
+Luego abre: http://127.0.0.1:&lt;puerto-libre&gt;
 </pre>
 </div>
 </div>
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=local-api">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=start-api-explained">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="Local-API-lifecycle">Local API lifecycle<a class="anchor-link" href="#Local-API-lifecycle">¶</a></h2><p>The server binds only to <code>127.0.0.1</code> on an unused local port. Health polling is bounded. The cleanup cell terminates only the process this notebook created, even if an error occurs.</p>
+<h2 id="2.-Arrancar-la-Model-API-y-confirmar-health">2. Arrancar la Model API y confirmar health<a class="anchor-link" href="#2.-Arrancar-la-Model-API-y-confirmar-health">¶</a></h2><p><strong>Qué estás mirando:</strong> un proceso local de API y la identidad del modelo que cargó al iniciar.</p>
+<p><strong>Por qué importa:</strong> Registry state no es Runtime state. Cambiar <code>champion</code> después no hace hot reload; solo un reinicio puede cargar la nueva referencia.</p>
+<p><strong>Qué ejecuta esta celda:</strong> reserva un puerto local, crea Uvicorn enlazado a <code>127.0.0.1</code>, espera <code>/health</code> y muestra la respuesta. Solo detendrá después el proceso que creó ella misma.</p>
+<p><strong>Qué deberías comprobar:</strong> <code>status=ok</code>, nombre, versión y run deben coincidir con la tabla anterior.</p>
+<p><strong>Qué significa si falla:</strong> la API no pudo cargar el alias, el entorno no tiene dependencias o el proceso no quedó sano. No continúes a <code>/predict</code>; revisa el error y el estado del Registry.</p>
 </div>
 </div>
 </div>
@@ -7954,7 +8049,7 @@ a.anchor-link {
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea">
-<div class="jp-InputPrompt jp-InputArea-prompt">In [3]:</div>
+<div class="jp-InputPrompt jp-InputArea-prompt">In [4]:</div>
 <div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="cm-editor cm-s-jupyter">
 <div class="highlight hl-ipython3"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">notebooks._demo_helpers</span><span class="w"> </span><span class="kn">import</span> <span class="n">cleanup_created_process</span><span class="p">,</span> <span class="n">wait_for_health</span>
@@ -7972,17 +8067,10 @@ a.anchor-link {
     <span class="n">cleanup_created_process</span><span class="p">(</span><span class="n">api_process</span><span class="p">,</span> <span class="n">created_by_helper</span><span class="o">=</span><span class="n">api_created_by_notebook</span><span class="p">)</span>
     <span class="n">port</span> <span class="o">=</span> <span class="n">unused_local_port</span><span class="p">()</span>
     <span class="n">BASE_URL</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">'http://127.0.0.1:</span><span class="si">{</span><span class="n">port</span><span class="si">}</span><span class="s1">'</span>
-    <span class="n">environment</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span> <span class="o">|</span> <span class="p">{</span>
-        <span class="s1">'MLFLOW_TRACKING_URI'</span><span class="p">:</span> <span class="n">TRACKING_URI</span><span class="p">,</span>
-        <span class="s1">'INVOICEOPS_MODEL_URI'</span><span class="p">:</span> <span class="sa">f</span><span class="s1">'models:/</span><span class="si">{</span><span class="n">MODEL_NAME</span><span class="si">}</span><span class="s1">@champion'</span><span class="p">,</span>
-        <span class="s1">'PYTHONPATH'</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">PROJECT_ROOT</span> <span class="o">/</span> <span class="s1">'src'</span><span class="p">),</span>
-    <span class="p">}</span>
+    <span class="n">environment</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span> <span class="o">|</span> <span class="p">{</span><span class="s1">'MLFLOW_TRACKING_URI'</span><span class="p">:</span> <span class="n">TRACKING_URI</span><span class="p">,</span> <span class="s1">'INVOICEOPS_MODEL_URI'</span><span class="p">:</span> <span class="sa">f</span><span class="s1">'models:/</span><span class="si">{</span><span class="n">MODEL_NAME</span><span class="si">}</span><span class="s1">@champion'</span><span class="p">,</span> <span class="s1">'PYTHONPATH'</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">PROJECT_ROOT</span> <span class="o">/</span> <span class="s1">'src'</span><span class="p">)}</span>
     <span class="n">venv_python</span> <span class="o">=</span> <span class="n">PROJECT_ROOT</span> <span class="o">/</span> <span class="s1">'.venv'</span> <span class="o">/</span> <span class="p">(</span><span class="s1">'Scripts/python.exe'</span> <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s1">'nt'</span> <span class="k">else</span> <span class="s1">'bin/python'</span><span class="p">)</span>
     <span class="n">python_executable</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">venv_python</span><span class="p">)</span> <span class="k">if</span> <span class="n">venv_python</span><span class="o">.</span><span class="n">is_file</span><span class="p">()</span> <span class="k">else</span> <span class="n">sys</span><span class="o">.</span><span class="n">executable</span>
-    <span class="n">api_process</span> <span class="o">=</span> <span class="n">subprocess</span><span class="o">.</span><span class="n">Popen</span><span class="p">(</span>
-        <span class="p">[</span><span class="n">python_executable</span><span class="p">,</span> <span class="s1">'-m'</span><span class="p">,</span> <span class="s1">'uvicorn'</span><span class="p">,</span> <span class="s1">'invoiceops.model_api.app:app'</span><span class="p">,</span> <span class="s1">'--host'</span><span class="p">,</span> <span class="s1">'127.0.0.1'</span><span class="p">,</span> <span class="s1">'--port'</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="n">port</span><span class="p">)],</span>
-        <span class="n">cwd</span><span class="o">=</span><span class="n">PROJECT_ROOT</span><span class="p">,</span> <span class="n">env</span><span class="o">=</span><span class="n">environment</span><span class="p">,</span> <span class="n">stdout</span><span class="o">=</span><span class="n">subprocess</span><span class="o">.</span><span class="n">DEVNULL</span><span class="p">,</span> <span class="n">stderr</span><span class="o">=</span><span class="n">subprocess</span><span class="o">.</span><span class="n">PIPE</span><span class="p">,</span> <span class="n">text</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-    <span class="p">)</span>
+    <span class="n">api_process</span> <span class="o">=</span> <span class="n">subprocess</span><span class="o">.</span><span class="n">Popen</span><span class="p">([</span><span class="n">python_executable</span><span class="p">,</span> <span class="s1">'-m'</span><span class="p">,</span> <span class="s1">'uvicorn'</span><span class="p">,</span> <span class="s1">'invoiceops.model_api.app:app'</span><span class="p">,</span> <span class="s1">'--host'</span><span class="p">,</span> <span class="s1">'127.0.0.1'</span><span class="p">,</span> <span class="s1">'--port'</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="n">port</span><span class="p">)],</span> <span class="n">cwd</span><span class="o">=</span><span class="n">PROJECT_ROOT</span><span class="p">,</span> <span class="n">env</span><span class="o">=</span><span class="n">environment</span><span class="p">,</span> <span class="n">stdout</span><span class="o">=</span><span class="n">subprocess</span><span class="o">.</span><span class="n">DEVNULL</span><span class="p">,</span> <span class="n">stderr</span><span class="o">=</span><span class="n">subprocess</span><span class="o">.</span><span class="n">PIPE</span><span class="p">,</span> <span class="n">text</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
     <span class="n">api_created_by_notebook</span> <span class="o">=</span> <span class="kc">True</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">health_request</span><span class="p">(</span><span class="n">url</span><span class="p">):</span>
         <span class="k">try</span><span class="p">:</span>
@@ -7990,17 +8078,14 @@ a.anchor-link {
         <span class="k">except</span> <span class="n">httpx</span><span class="o">.</span><span class="n">RequestError</span><span class="p">:</span>
             <span class="k">return</span> <span class="kc">False</span>
     <span class="k">try</span><span class="p">:</span>
-        <span class="n">wait_for_health</span><span class="p">(</span>
-            <span class="sa">f</span><span class="s1">'</span><span class="si">{</span><span class="n">BASE_URL</span><span class="si">}</span><span class="s1">/health'</span><span class="p">,</span> <span class="n">timeout_seconds</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span> <span class="n">poll_interval_seconds</span><span class="o">=</span><span class="mf">0.25</span><span class="p">,</span>
-            <span class="n">request</span><span class="o">=</span><span class="n">health_request</span><span class="p">,</span>
-        <span class="p">)</span>
+        <span class="n">wait_for_health</span><span class="p">(</span><span class="sa">f</span><span class="s1">'</span><span class="si">{</span><span class="n">BASE_URL</span><span class="si">}</span><span class="s1">/health'</span><span class="p">,</span> <span class="n">timeout_seconds</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span> <span class="n">poll_interval_seconds</span><span class="o">=</span><span class="mf">0.25</span><span class="p">,</span> <span class="n">request</span><span class="o">=</span><span class="n">health_request</span><span class="p">)</span>
     <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
         <span class="n">cleanup_created_process</span><span class="p">(</span><span class="n">api_process</span><span class="p">,</span> <span class="n">created_by_helper</span><span class="o">=</span><span class="n">api_created_by_notebook</span><span class="p">)</span>
         <span class="k">raise</span>
 
 <span class="n">start_api</span><span class="p">()</span>
 <span class="n">health</span> <span class="o">=</span> <span class="n">httpx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="sa">f</span><span class="s1">'</span><span class="si">{</span><span class="n">BASE_URL</span><span class="si">}</span><span class="s1">/health'</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span><span class="o">.</span><span class="n">json</span><span class="p">()</span>
-<span class="n">display</span><span class="p">(</span><span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">([</span><span class="n">health</span><span class="p">]))</span>
+<span class="n">display</span><span class="p">(</span><span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">([{</span><span class="s1">'Estado'</span><span class="p">:</span> <span class="n">health</span><span class="p">[</span><span class="s1">'status'</span><span class="p">],</span> <span class="s1">'Nombre'</span><span class="p">:</span> <span class="n">health</span><span class="p">[</span><span class="s1">'model_name'</span><span class="p">],</span> <span class="s1">'Versión cargada'</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"v</span><span class="si">{</span><span class="n">health</span><span class="p">[</span><span class="s1">'model_version'</span><span class="p">]</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span> <span class="s1">'Run cargado'</span><span class="p">:</span> <span class="n">health</span><span class="p">[</span><span class="s1">'run_id'</span><span class="p">]}]))</span>
 </pre></div>
 </div>
 </div>
@@ -8031,24 +8116,39 @@ a.anchor-link {
 <thead>
 <tr style="text-align: right;">
 <th></th>
-<th>model_name</th>
-<th>model_version</th>
-<th>run_id</th>
-<th>status</th>
+<th>Estado</th>
+<th>Nombre</th>
+<th>Versión cargada</th>
+<th>Run cargado</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <th>0</th>
-<td>invoice-review</td>
-<td>2</td>
-<td>dddca7b27b374e7fa3a30d695ee7228d</td>
 <td>ok</td>
+<td>invoice-review</td>
+<td>v2</td>
+<td>3f0c5e489c074ae6a539976fb2285fa3</td>
 </tr>
 </tbody>
 </table>
 </div>
 </div>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=features-policy-explained">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<h2 id="3.-Features,-/predict-y-tres-mecanismos-distintos">3. Features, <code>/predict</code> y tres mecanismos distintos<a class="anchor-link" href="#3.-Features,-/predict-y-tres-mecanismos-distintos">¶</a></h2><p><strong>Qué estás mirando:</strong> para <code>INV-10029</code> e <code>INV-10030</code>, la recomendación de Rule v1, la probabilidad devuelta por el modelo y la recomendación final de Policy.</p>
+<p><strong>Por qué importa:</strong> Rule v1 usa reglas explícitas; el modelo estima una probabilidad con ocho features; Policy transforma esa probabilidad mediante su umbral contractual. Son mecanismos diferentes aunque puedan coincidir. Los resultados son datos reales de esta ejecución: ninguna factura tiene una decisión ML prefijada.</p>
+<p><strong>Qué ejecuta esta celda:</strong> inicializa la base aislada, transforma cada factura con <code>invoice_to_features</code>, llama <code>/predict</code> y aplica <code>recommend_from_probability</code>.</p>
+<p><strong>Qué deberías comprobar:</strong> compara cada fila, incluyendo versión/run del modelo, Rule v1, probabilidad y Policy. La igualdad o diferencia entre recomendaciones se interpreta a partir de la salida real.</p>
+<p><strong>Qué significa si falla:</strong> un contrato de features o la API está fallando; no sustituyas la respuesta por una probabilidad inventada.</p>
 </div>
 </div>
 </div>
@@ -8057,7 +8157,7 @@ a.anchor-link {
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea">
-<div class="jp-InputPrompt jp-InputArea-prompt">In [4]:</div>
+<div class="jp-InputPrompt jp-InputArea-prompt">In [5]:</div>
 <div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="cm-editor cm-s-jupyter">
 <div class="highlight hl-ipython3"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">invoiceops.domain.policy</span><span class="w"> </span><span class="kn">import</span> <span class="n">fallback_recommendation</span><span class="p">,</span> <span class="n">recommend_from_probability</span>
@@ -8066,7 +8166,8 @@ a.anchor-link {
 <span class="kn">from</span><span class="w"> </span><span class="nn">invoiceops.legacy.seed</span><span class="w"> </span><span class="kn">import</span> <span class="n">seed_invoices</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">invoiceops.ml.features</span><span class="w"> </span><span class="kn">import</span> <span class="n">invoice_to_features</span>
 
-<span class="n">init_db</span><span class="p">(</span><span class="n">DEMO_DB</span><span class="p">)</span>
+<span class="k">with</span> <span class="n">contextlib</span><span class="o">.</span><span class="n">redirect_stdout</span><span class="p">(</span><span class="n">io</span><span class="o">.</span><span class="n">StringIO</span><span class="p">()):</span>
+    <span class="n">init_db</span><span class="p">(</span><span class="n">DEMO_DB</span><span class="p">)</span>
 <span class="k">if</span> <span class="n">get_invoice</span><span class="p">(</span><span class="n">DEMO_DB</span><span class="p">,</span> <span class="s1">'INV-10029'</span><span class="p">)</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
     <span class="n">seed_invoices</span><span class="p">(</span><span class="n">DEMO_DB</span><span class="p">)</span>
 
@@ -8075,21 +8176,15 @@ a.anchor-link {
     <span class="n">response</span> <span class="o">=</span> <span class="n">httpx</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="sa">f</span><span class="s1">'</span><span class="si">{</span><span class="n">BASE_URL</span><span class="si">}</span><span class="s1">/predict'</span><span class="p">,</span> <span class="n">json</span><span class="o">=</span><span class="n">invoice_to_features</span><span class="p">(</span><span class="n">invoice</span><span class="p">),</span> <span class="n">timeout</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span>
     <span class="n">response</span><span class="o">.</span><span class="n">raise_for_status</span><span class="p">()</span>
     <span class="n">prediction</span> <span class="o">=</span> <span class="n">response</span><span class="o">.</span><span class="n">json</span><span class="p">()</span>
-    <span class="n">recommendation</span> <span class="o">=</span> <span class="n">recommend_from_probability</span><span class="p">(</span><span class="n">prediction</span><span class="p">[</span><span class="s1">'manual_review_probability'</span><span class="p">])</span>
-    <span class="k">return</span> <span class="n">invoice</span><span class="p">,</span> <span class="n">prediction</span><span class="p">,</span> <span class="n">recommendation</span>
+    <span class="k">return</span> <span class="n">invoice</span><span class="p">,</span> <span class="n">prediction</span><span class="p">,</span> <span class="n">recommend_from_probability</span><span class="p">(</span><span class="n">prediction</span><span class="p">[</span><span class="s1">'manual_review_probability'</span><span class="p">])</span>
 
+<span class="n">comparison_rows</span> <span class="o">=</span> <span class="p">[]</span>
 <span class="k">for</span> <span class="n">invoice_id</span> <span class="ow">in</span> <span class="p">(</span><span class="s1">'INV-10029'</span><span class="p">,</span> <span class="s1">'INV-10030'</span><span class="p">):</span>
     <span class="n">invoice</span><span class="p">,</span> <span class="n">prediction</span><span class="p">,</span> <span class="n">recommendation</span> <span class="o">=</span> <span class="n">predict_and_recommend</span><span class="p">(</span><span class="n">invoice_id</span><span class="p">)</span>
-    <span class="n">display</span><span class="p">(</span><span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">([{</span>
-        <span class="s1">'invoice_id'</span><span class="p">:</span> <span class="n">invoice_id</span><span class="p">,</span> <span class="s1">'rule_version'</span><span class="p">:</span> <span class="n">RULE_VERSION</span><span class="p">,</span> <span class="s1">'rule_result'</span><span class="p">:</span> <span class="n">decide_invoice</span><span class="p">(</span><span class="n">invoice</span><span class="p">)</span><span class="o">.</span><span class="n">value</span><span class="p">,</span>
-        <span class="s1">'model_probability'</span><span class="p">:</span> <span class="n">prediction</span><span class="p">[</span><span class="s1">'manual_review_probability'</span><span class="p">],</span> <span class="s1">'policy_version'</span><span class="p">:</span> <span class="n">recommendation</span><span class="o">.</span><span class="n">policy_version</span><span class="p">,</span>
-        <span class="s1">'policy_recommendation'</span><span class="p">:</span> <span class="n">recommendation</span><span class="o">.</span><span class="n">decision</span><span class="o">.</span><span class="n">value</span><span class="p">,</span>
-    <span class="p">}]))</span>
-    <span class="k">if</span> <span class="n">invoice_id</span> <span class="o">==</span> <span class="s1">'INV-10029'</span><span class="p">:</span>
-        <span class="k">assert</span> <span class="n">decide_invoice</span><span class="p">(</span><span class="n">invoice</span><span class="p">)</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="s1">'AUTO_PROCESS'</span>
-    <span class="k">else</span><span class="p">:</span>
-        <span class="k">assert</span> <span class="n">decide_invoice</span><span class="p">(</span><span class="n">invoice</span><span class="p">)</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="s1">'AUTO_PROCESS'</span>
-        <span class="nb">print</span><span class="p">(</span><span class="s1">'INV-10030 uses the real served score; do not fabricate a Policy outcome.'</span><span class="p">)</span>
+    <span class="n">comparison_rows</span><span class="o">.</span><span class="n">append</span><span class="p">({</span><span class="s1">'Factura'</span><span class="p">:</span> <span class="n">invoice_id</span><span class="p">,</span> <span class="s1">'Rule v1'</span><span class="p">:</span> <span class="n">decide_invoice</span><span class="p">(</span><span class="n">invoice</span><span class="p">)</span><span class="o">.</span><span class="n">value</span><span class="p">,</span> <span class="s1">'Probabilidad'</span><span class="p">:</span> <span class="n">prediction</span><span class="p">[</span><span class="s1">'manual_review_probability'</span><span class="p">],</span> <span class="s1">'Policy'</span><span class="p">:</span> <span class="n">recommendation</span><span class="o">.</span><span class="n">decision</span><span class="o">.</span><span class="n">value</span><span class="p">,</span> <span class="s1">'Versión Policy'</span><span class="p">:</span> <span class="n">recommendation</span><span class="o">.</span><span class="n">policy_version</span><span class="p">,</span> <span class="s1">'Versión modelo'</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"v</span><span class="si">{</span><span class="n">prediction</span><span class="p">[</span><span class="s1">'model_version'</span><span class="p">]</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span> <span class="s1">'Run'</span><span class="p">:</span> <span class="n">prediction</span><span class="p">[</span><span class="s1">'run_id'</span><span class="p">]})</span>
+<span class="n">comparison_table</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span><span class="n">comparison_rows</span><span class="p">)</span>
+<span class="n">display</span><span class="p">(</span><span class="n">comparison_table</span><span class="o">.</span><span class="n">style</span><span class="o">.</span><span class="n">format</span><span class="p">({</span><span class="s1">'Probabilidad'</span><span class="p">:</span> <span class="s1">'</span><span class="si">{:.3f}</span><span class="s1">'</span><span class="p">}))</span>
+<span class="nb">print</span><span class="p">(</span><span class="s1">'Comparación completada con respuestas reales de /predict; no hay decisiones ML prefijadas.'</span><span class="p">)</span>
 </pre></div>
 </div>
 </div>
@@ -8101,116 +8196,68 @@ a.anchor-link {
 <div class="jp-OutputArea jp-Cell-outputArea">
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
-<div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre>0 migrations pending
-</pre>
-</div>
-</div>
-<div class="jp-OutputArea-child">
-<div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedHTMLCommon jp-RenderedHTML jp-OutputArea-output" data-mime-type="text/html" tabindex="0">
-<div>
-<style scoped="">
-    .dataframe tbody tr th:only-of-type {
-        vertical-align: middle;
-    }
-
-    .dataframe tbody tr th {
-        vertical-align: top;
-    }
-
-    .dataframe thead th {
-        text-align: right;
-    }
+<style type="text/css">
 </style>
-<table border="1" class="dataframe">
+<table id="T_c9ae9">
 <thead>
-<tr style="text-align: right;">
-<th></th>
-<th>invoice_id</th>
-<th>rule_version</th>
-<th>rule_result</th>
-<th>model_probability</th>
-<th>policy_version</th>
-<th>policy_recommendation</th>
+<tr>
+<th class="blank level0"> </th>
+<th class="col_heading level0 col0" id="T_c9ae9_level0_col0">Factura</th>
+<th class="col_heading level0 col1" id="T_c9ae9_level0_col1">Rule v1</th>
+<th class="col_heading level0 col2" id="T_c9ae9_level0_col2">Probabilidad</th>
+<th class="col_heading level0 col3" id="T_c9ae9_level0_col3">Policy</th>
+<th class="col_heading level0 col4" id="T_c9ae9_level0_col4">Versión Policy</th>
+<th class="col_heading level0 col5" id="T_c9ae9_level0_col5">Versión modelo</th>
+<th class="col_heading level0 col6" id="T_c9ae9_level0_col6">Run</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<th>0</th>
-<td>INV-10029</td>
-<td>invoice-rules-v1</td>
-<td>AUTO_PROCESS</td>
-<td>0.24</td>
-<td>ml-policy-v1</td>
-<td>AUTO_PROCESS</td>
+<th class="row_heading level0 row0" id="T_c9ae9_level0_row0">0</th>
+<td class="data row0 col0" id="T_c9ae9_row0_col0">INV-10029</td>
+<td class="data row0 col1" id="T_c9ae9_row0_col1">AUTO_PROCESS</td>
+<td class="data row0 col2" id="T_c9ae9_row0_col2">0.240</td>
+<td class="data row0 col3" id="T_c9ae9_row0_col3">AUTO_PROCESS</td>
+<td class="data row0 col4" id="T_c9ae9_row0_col4">ml-policy-v1</td>
+<td class="data row0 col5" id="T_c9ae9_row0_col5">v2</td>
+<td class="data row0 col6" id="T_c9ae9_row0_col6">3f0c5e489c074ae6a539976fb2285fa3</td>
+</tr>
+<tr>
+<th class="row_heading level0 row1" id="T_c9ae9_level0_row1">1</th>
+<td class="data row1 col0" id="T_c9ae9_row1_col0">INV-10030</td>
+<td class="data row1 col1" id="T_c9ae9_row1_col1">AUTO_PROCESS</td>
+<td class="data row1 col2" id="T_c9ae9_row1_col2">0.770</td>
+<td class="data row1 col3" id="T_c9ae9_row1_col3">AUTO_PROCESS</td>
+<td class="data row1 col4" id="T_c9ae9_row1_col4">ml-policy-v1</td>
+<td class="data row1 col5" id="T_c9ae9_row1_col5">v2</td>
+<td class="data row1 col6" id="T_c9ae9_row1_col6">3f0c5e489c074ae6a539976fb2285fa3</td>
 </tr>
 </tbody>
 </table>
 </div>
 </div>
-</div>
-<div class="jp-OutputArea-child">
-<div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
-<div class="jp-RenderedHTMLCommon jp-RenderedHTML jp-OutputArea-output" data-mime-type="text/html" tabindex="0">
-<div>
-<style scoped="">
-    .dataframe tbody tr th:only-of-type {
-        vertical-align: middle;
-    }
-
-    .dataframe tbody tr th {
-        vertical-align: top;
-    }
-
-    .dataframe thead th {
-        text-align: right;
-    }
-</style>
-<table border="1" class="dataframe">
-<thead>
-<tr style="text-align: right;">
-<th></th>
-<th>invoice_id</th>
-<th>rule_version</th>
-<th>rule_result</th>
-<th>model_probability</th>
-<th>policy_version</th>
-<th>policy_recommendation</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<th>0</th>
-<td>INV-10030</td>
-<td>invoice-rules-v1</td>
-<td>AUTO_PROCESS</td>
-<td>0.77</td>
-<td>ml-policy-v1</td>
-<td>AUTO_PROCESS</td>
-</tr>
-</tbody>
-</table>
-</div>
-</div>
-</div>
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre>INV-10030 uses the real served score; do not fabricate a Policy outcome.
+<pre>Comparación completada con respuestas reales de /predict; no hay decisiones ML prefijadas.
 </pre>
 </div>
 </div>
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=audit-compare">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=audit-ab-explained">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="Compare-A-and-B-on-the-same-invoice">Compare A and B on the same invoice<a class="anchor-link" href="#Compare-A-and-B-on-the-same-invoice">¶</a></h2><p>Each promotion is followed by an API restart and <code>/health</code> verification. The same Policy is applied to both real scores. <strong>WARNING: MODIFIES STATE</strong> cells below persist at most one audit record per isolated demo action.</p>
+<h2 id="4.-Promotion/restart-A/B-y-evidencia-persistida">4. Promotion/restart A/B y evidencia persistida<a class="anchor-link" href="#4.-Promotion/restart-A/B-y-evidencia-persistida">¶</a></h2><p><strong>Qué estás mirando:</strong> el ciclo completo para cada candidato: mover alias, detener solo la API creada aquí, iniciar API, confirmar runtime en <code>/health</code>, predecir, persistir y comparar.</p>
+<p><strong>Por qué importa:</strong> una Promotion cambia Registry, no la memoria del servidor. El restart y <code>/health</code> son la evidencia de que el runtime realmente cambió.</p>
+<p><strong>Qué ejecuta esta celda:</strong> <strong>⚠ MODIFICA ESTADO</strong> en el Registry y SQLite aislados. Sus acciones son idempotentes: una segunda ejecución no duplica promociones ni auditorías.</p>
+<p><strong>Qué deberías comprobar:</strong> A y B muestran versión, run, probabilidad y Policy; la tabla de auditoría añade <code>source</code>, <code>reason</code> y <code>correlation_id</code>. Que ambos resultados coincidan no elimina el valor de la trazabilidad: son versiones distintas.</p>
+<p><strong>Qué significa si falla:</strong> si <code>/health</code> no confirma la versión promovida, hay una discrepancia Registry/Runtime y no se debe persistir como si el cambio hubiera ocurrido.</p>
 </div>
 </div>
 </div>
@@ -8219,10 +8266,10 @@ a.anchor-link {
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea">
-<div class="jp-InputPrompt jp-InputArea-prompt">In [5]:</div>
+<div class="jp-InputPrompt jp-InputArea-prompt">In [6]:</div>
 <div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="cm-editor cm-s-jupyter">
-<div class="highlight hl-ipython3"><pre><span></span><span class="c1"># WARNING: MODIFIES STATE - promotion and audit actions are independently guarded.</span>
+<div class="highlight hl-ipython3"><pre><span></span><span class="c1"># ⚠ MODIFICA ESTADO: Promotion y auditoría en la demo aislada, protegidas por acción.</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">notebooks._demo_helpers</span><span class="w"> </span><span class="kn">import</span> <span class="n">run_mutable_action_once</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">save_state</span><span class="p">():</span>
@@ -8230,38 +8277,33 @@ a.anchor-link {
 
 <span class="k">def</span><span class="w"> </span><span class="nf">promote_for_audit</span><span class="p">(</span><span class="n">candidate</span><span class="p">):</span>
     <span class="n">version</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">state</span><span class="p">[</span><span class="s1">'registered_versions'</span><span class="p">][</span><span class="n">candidate</span><span class="p">])</span>
-    <span class="n">action</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">'promote-for-audit-</span><span class="si">{</span><span class="n">candidate</span><span class="si">}</span><span class="s1">'</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">promote_once</span><span class="p">():</span>
-        <span class="n">current</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">get_model_version_by_alias</span><span class="p">(</span><span class="n">MODEL_NAME</span><span class="p">,</span> <span class="s1">'champion'</span><span class="p">)</span><span class="o">.</span><span class="n">version</span>
+        <span class="n">current</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">client</span><span class="o">.</span><span class="n">get_model_version_by_alias</span><span class="p">(</span><span class="n">MODEL_NAME</span><span class="p">,</span> <span class="s1">'champion'</span><span class="p">)</span><span class="o">.</span><span class="n">version</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">current</span> <span class="o">!=</span> <span class="n">version</span><span class="p">:</span>
             <span class="n">promote_model</span><span class="p">(</span><span class="n">version</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">version</span>
-    <span class="n">promoted</span> <span class="o">=</span> <span class="n">run_mutable_action_once</span><span class="p">(</span><span class="n">action</span><span class="p">,</span> <span class="n">state</span><span class="p">[</span><span class="s1">'completed_actions'</span><span class="p">],</span> <span class="n">promote_once</span><span class="p">)</span>
+    <span class="n">promoted</span> <span class="o">=</span> <span class="n">run_mutable_action_once</span><span class="p">(</span><span class="sa">f</span><span class="s1">'promote-for-audit-</span><span class="si">{</span><span class="n">candidate</span><span class="si">}</span><span class="s1">'</span><span class="p">,</span> <span class="n">state</span><span class="p">[</span><span class="s1">'completed_actions'</span><span class="p">],</span> <span class="n">promote_once</span><span class="p">)</span>
     <span class="n">save_state</span><span class="p">()</span>
     <span class="k">return</span> <span class="nb">str</span><span class="p">(</span><span class="n">promoted</span><span class="p">)</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">serve_and_persist</span><span class="p">(</span><span class="n">candidate</span><span class="p">):</span>
     <span class="n">version</span> <span class="o">=</span> <span class="n">promote_for_audit</span><span class="p">(</span><span class="n">candidate</span><span class="p">)</span>
-    <span class="n">action</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">'persist-INV-10030-</span><span class="si">{</span><span class="n">candidate</span><span class="si">}</span><span class="s1">'</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">persist_once</span><span class="p">():</span>
-        <span class="n">start_api</span><span class="p">()</span>  <span class="c1"># The runtime changes only after this restart.</span>
-        <span class="n">health</span> <span class="o">=</span> <span class="n">httpx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="sa">f</span><span class="s1">'</span><span class="si">{</span><span class="n">BASE_URL</span><span class="si">}</span><span class="s1">/health'</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span><span class="o">.</span><span class="n">json</span><span class="p">()</span>
-        <span class="k">assert</span> <span class="n">health</span><span class="p">[</span><span class="s1">'model_version'</span><span class="p">]</span> <span class="o">==</span> <span class="n">version</span>
+        <span class="n">start_api</span><span class="p">()</span>  <span class="c1"># El runtime cambia solo después del reinicio.</span>
+        <span class="n">runtime</span> <span class="o">=</span> <span class="n">httpx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="sa">f</span><span class="s1">'</span><span class="si">{</span><span class="n">BASE_URL</span><span class="si">}</span><span class="s1">/health'</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span><span class="o">.</span><span class="n">json</span><span class="p">()</span>
+        <span class="k">assert</span> <span class="n">runtime</span><span class="p">[</span><span class="s1">'model_version'</span><span class="p">]</span> <span class="o">==</span> <span class="n">version</span>
         <span class="n">invoice</span><span class="p">,</span> <span class="n">prediction</span><span class="p">,</span> <span class="n">recommendation</span> <span class="o">=</span> <span class="n">predict_and_recommend</span><span class="p">(</span><span class="s1">'INV-10030'</span><span class="p">)</span>
         <span class="n">correlation_id</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">'t23-5-</span><span class="si">{</span><span class="n">candidate</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span><span class="si">}</span><span class="s1">-</span><span class="si">{</span><span class="n">uuid4</span><span class="p">()</span><span class="si">}</span><span class="s1">'</span>
-        <span class="n">insert_model_evaluation</span><span class="p">(</span>
-            <span class="n">DEMO_DB</span><span class="p">,</span> <span class="n">invoice</span><span class="o">.</span><span class="n">invoice_id</span><span class="p">,</span> <span class="n">correlation_id</span><span class="o">=</span><span class="n">correlation_id</span><span class="p">,</span> <span class="n">recommendation</span><span class="o">=</span><span class="n">recommendation</span><span class="p">,</span>
-            <span class="n">model_name</span><span class="o">=</span><span class="n">prediction</span><span class="p">[</span><span class="s1">'model_name'</span><span class="p">],</span> <span class="n">model_version</span><span class="o">=</span><span class="n">prediction</span><span class="p">[</span><span class="s1">'model_version'</span><span class="p">],</span>
-            <span class="n">run_id</span><span class="o">=</span><span class="n">prediction</span><span class="p">[</span><span class="s1">'run_id'</span><span class="p">],</span> <span class="n">manual_review_probability</span><span class="o">=</span><span class="n">prediction</span><span class="p">[</span><span class="s1">'manual_review_probability'</span><span class="p">],</span>
-        <span class="p">)</span>
-        <span class="k">return</span> <span class="p">{</span><span class="s1">'model_version'</span><span class="p">:</span> <span class="n">prediction</span><span class="p">[</span><span class="s1">'model_version'</span><span class="p">],</span> <span class="s1">'model_type'</span><span class="p">:</span> <span class="n">client</span><span class="o">.</span><span class="n">get_run</span><span class="p">(</span><span class="n">prediction</span><span class="p">[</span><span class="s1">'run_id'</span><span class="p">])</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">params</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">'model_type'</span><span class="p">),</span> <span class="s1">'probability'</span><span class="p">:</span> <span class="n">prediction</span><span class="p">[</span><span class="s1">'manual_review_probability'</span><span class="p">],</span> <span class="s1">'recommendation'</span><span class="p">:</span> <span class="n">recommendation</span><span class="o">.</span><span class="n">decision</span><span class="o">.</span><span class="n">value</span><span class="p">}</span>
-    <span class="n">state</span><span class="p">[</span><span class="s1">'evaluations'</span><span class="p">][</span><span class="n">candidate</span><span class="p">]</span> <span class="o">=</span> <span class="n">run_mutable_action_once</span><span class="p">(</span><span class="n">action</span><span class="p">,</span> <span class="n">state</span><span class="p">[</span><span class="s1">'completed_actions'</span><span class="p">],</span> <span class="n">persist_once</span><span class="p">)</span>
+        <span class="n">insert_model_evaluation</span><span class="p">(</span><span class="n">DEMO_DB</span><span class="p">,</span> <span class="n">invoice</span><span class="o">.</span><span class="n">invoice_id</span><span class="p">,</span> <span class="n">correlation_id</span><span class="o">=</span><span class="n">correlation_id</span><span class="p">,</span> <span class="n">recommendation</span><span class="o">=</span><span class="n">recommendation</span><span class="p">,</span> <span class="n">model_name</span><span class="o">=</span><span class="n">prediction</span><span class="p">[</span><span class="s1">'model_name'</span><span class="p">],</span> <span class="n">model_version</span><span class="o">=</span><span class="n">prediction</span><span class="p">[</span><span class="s1">'model_version'</span><span class="p">],</span> <span class="n">run_id</span><span class="o">=</span><span class="n">prediction</span><span class="p">[</span><span class="s1">'run_id'</span><span class="p">],</span> <span class="n">manual_review_probability</span><span class="o">=</span><span class="n">prediction</span><span class="p">[</span><span class="s1">'manual_review_probability'</span><span class="p">])</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s1">'Candidato'</span><span class="p">:</span> <span class="n">candidate</span><span class="p">,</span> <span class="s1">'Versión'</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"v</span><span class="si">{</span><span class="n">prediction</span><span class="p">[</span><span class="s1">'model_version'</span><span class="p">]</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span> <span class="s1">'Run'</span><span class="p">:</span> <span class="n">prediction</span><span class="p">[</span><span class="s1">'run_id'</span><span class="p">],</span> <span class="s1">'Probabilidad'</span><span class="p">:</span> <span class="n">prediction</span><span class="p">[</span><span class="s1">'manual_review_probability'</span><span class="p">],</span> <span class="s1">'Policy'</span><span class="p">:</span> <span class="n">recommendation</span><span class="o">.</span><span class="n">decision</span><span class="o">.</span><span class="n">value</span><span class="p">}</span>
+    <span class="n">state</span><span class="p">[</span><span class="s1">'evaluations'</span><span class="p">][</span><span class="n">candidate</span><span class="p">]</span> <span class="o">=</span> <span class="n">run_mutable_action_once</span><span class="p">(</span><span class="sa">f</span><span class="s1">'persist-INV-10030-</span><span class="si">{</span><span class="n">candidate</span><span class="si">}</span><span class="s1">'</span><span class="p">,</span> <span class="n">state</span><span class="p">[</span><span class="s1">'completed_actions'</span><span class="p">],</span> <span class="n">persist_once</span><span class="p">)</span>
     <span class="n">save_state</span><span class="p">()</span>
 
 <span class="k">for</span> <span class="n">candidate</span> <span class="ow">in</span> <span class="p">(</span><span class="s1">'A'</span><span class="p">,</span> <span class="s1">'B'</span><span class="p">):</span>
     <span class="n">serve_and_persist</span><span class="p">(</span><span class="n">candidate</span><span class="p">)</span>
-<span class="n">display</span><span class="p">(</span><span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">([</span><span class="n">state</span><span class="p">[</span><span class="s1">'evaluations'</span><span class="p">][</span><span class="s1">'A'</span><span class="p">],</span> <span class="n">state</span><span class="p">[</span><span class="s1">'evaluations'</span><span class="p">][</span><span class="s1">'B'</span><span class="p">]],</span> <span class="n">index</span><span class="o">=</span><span class="p">[</span><span class="s1">'A'</span><span class="p">,</span> <span class="s1">'B'</span><span class="p">]))</span>
-<span class="n">display</span><span class="p">(</span><span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">([</span><span class="nb">dict</span><span class="p">(</span><span class="n">row</span><span class="p">)</span> <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">list_model_evaluations</span><span class="p">(</span><span class="n">DEMO_DB</span><span class="p">,</span> <span class="s1">'INV-10030'</span><span class="p">)]))</span>
+<span class="n">display</span><span class="p">(</span><span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">([</span><span class="n">state</span><span class="p">[</span><span class="s1">'evaluations'</span><span class="p">][</span><span class="s1">'A'</span><span class="p">],</span> <span class="n">state</span><span class="p">[</span><span class="s1">'evaluations'</span><span class="p">][</span><span class="s1">'B'</span><span class="p">]])</span><span class="o">.</span><span class="n">style</span><span class="o">.</span><span class="n">format</span><span class="p">({</span><span class="s1">'Probabilidad'</span><span class="p">:</span> <span class="s1">'</span><span class="si">{:.3f}</span><span class="s1">'</span><span class="p">}))</span>
+<span class="n">audit</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">([</span><span class="nb">dict</span><span class="p">(</span><span class="n">row</span><span class="p">)</span> <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">list_model_evaluations</span><span class="p">(</span><span class="n">DEMO_DB</span><span class="p">,</span> <span class="s1">'INV-10030'</span><span class="p">)])</span>
+<span class="n">display</span><span class="p">(</span><span class="n">audit</span><span class="p">[[</span><span class="s1">'invoice_id'</span><span class="p">,</span> <span class="s1">'model_name'</span><span class="p">,</span> <span class="s1">'model_version'</span><span class="p">,</span> <span class="s1">'run_id'</span><span class="p">,</span> <span class="s1">'manual_review_probability'</span><span class="p">,</span> <span class="s1">'recommendation'</span><span class="p">,</span> <span class="s1">'source'</span><span class="p">,</span> <span class="s1">'reason'</span><span class="p">,</span> <span class="s1">'correlation_id'</span><span class="p">]]</span><span class="o">.</span><span class="n">rename</span><span class="p">(</span><span class="n">columns</span><span class="o">=</span><span class="p">{</span><span class="s1">'invoice_id'</span><span class="p">:</span> <span class="s1">'Factura'</span><span class="p">,</span> <span class="s1">'model_name'</span><span class="p">:</span> <span class="s1">'Nombre'</span><span class="p">,</span> <span class="s1">'model_version'</span><span class="p">:</span> <span class="s1">'Versión'</span><span class="p">,</span> <span class="s1">'run_id'</span><span class="p">:</span> <span class="s1">'Run'</span><span class="p">,</span> <span class="s1">'manual_review_probability'</span><span class="p">:</span> <span class="s1">'Probabilidad'</span><span class="p">,</span> <span class="s1">'recommendation'</span><span class="p">:</span> <span class="s1">'Policy'</span><span class="p">,</span> <span class="s1">'correlation_id'</span><span class="p">:</span> <span class="s1">'Correlation ID'</span><span class="p">})</span><span class="o">.</span><span class="n">style</span><span class="o">.</span><span class="n">format</span><span class="p">({</span><span class="s1">'Probabilidad'</span><span class="p">:</span> <span class="s1">'</span><span class="si">{:.3f}</span><span class="s1">'</span><span class="p">}))</span>
 </pre></div>
 </div>
 </div>
@@ -8274,139 +8316,115 @@ a.anchor-link {
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedHTMLCommon jp-RenderedHTML jp-OutputArea-output" data-mime-type="text/html" tabindex="0">
-<div>
-<style scoped="">
-    .dataframe tbody tr th:only-of-type {
-        vertical-align: middle;
-    }
-
-    .dataframe tbody tr th {
-        vertical-align: top;
-    }
-
-    .dataframe thead th {
-        text-align: right;
-    }
+<style type="text/css">
 </style>
-<table border="1" class="dataframe">
+<table id="T_e5599">
 <thead>
-<tr style="text-align: right;">
-<th></th>
-<th>model_type</th>
-<th>model_version</th>
-<th>probability</th>
-<th>recommendation</th>
+<tr>
+<th class="blank level0"> </th>
+<th class="col_heading level0 col0" id="T_e5599_level0_col0">Candidato</th>
+<th class="col_heading level0 col1" id="T_e5599_level0_col1">Policy</th>
+<th class="col_heading level0 col2" id="T_e5599_level0_col2">Probabilidad</th>
+<th class="col_heading level0 col3" id="T_e5599_level0_col3">Run</th>
+<th class="col_heading level0 col4" id="T_e5599_level0_col4">Versión</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<th>A</th>
-<td>random_forest</td>
-<td>1</td>
-<td>0.77</td>
-<td>AUTO_PROCESS</td>
+<th class="row_heading level0 row0" id="T_e5599_level0_row0">0</th>
+<td class="data row0 col0" id="T_e5599_row0_col0">A</td>
+<td class="data row0 col1" id="T_e5599_row0_col1">AUTO_PROCESS</td>
+<td class="data row0 col2" id="T_e5599_row0_col2">0.770</td>
+<td class="data row0 col3" id="T_e5599_row0_col3">8ab4bf003d6f43c780c27c62c2e4b6e6</td>
+<td class="data row0 col4" id="T_e5599_row0_col4">v1</td>
 </tr>
 <tr>
-<th>B</th>
-<td>random_forest</td>
-<td>2</td>
-<td>0.77</td>
-<td>AUTO_PROCESS</td>
+<th class="row_heading level0 row1" id="T_e5599_level0_row1">1</th>
+<td class="data row1 col0" id="T_e5599_row1_col0">B</td>
+<td class="data row1 col1" id="T_e5599_row1_col1">AUTO_PROCESS</td>
+<td class="data row1 col2" id="T_e5599_row1_col2">0.770</td>
+<td class="data row1 col3" id="T_e5599_row1_col3">3f0c5e489c074ae6a539976fb2285fa3</td>
+<td class="data row1 col4" id="T_e5599_row1_col4">v2</td>
 </tr>
 </tbody>
 </table>
-</div>
 </div>
 </div>
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedHTMLCommon jp-RenderedHTML jp-OutputArea-output" data-mime-type="text/html" tabindex="0">
-<div>
-<style scoped="">
-    .dataframe tbody tr th:only-of-type {
-        vertical-align: middle;
-    }
-
-    .dataframe tbody tr th {
-        vertical-align: top;
-    }
-
-    .dataframe thead th {
-        text-align: right;
-    }
+<style type="text/css">
 </style>
-<table border="1" class="dataframe">
+<table id="T_22453">
 <thead>
-<tr style="text-align: right;">
-<th></th>
-<th>id</th>
-<th>invoice_id</th>
-<th>correlation_id</th>
-<th>model_name</th>
-<th>model_version</th>
-<th>run_id</th>
-<th>manual_review_probability</th>
-<th>policy_version</th>
-<th>policy_threshold</th>
-<th>recommendation</th>
-<th>source</th>
-<th>reason</th>
-<th>created_at</th>
+<tr>
+<th class="blank level0"> </th>
+<th class="col_heading level0 col0" id="T_22453_level0_col0">Factura</th>
+<th class="col_heading level0 col1" id="T_22453_level0_col1">Nombre</th>
+<th class="col_heading level0 col2" id="T_22453_level0_col2">Versión</th>
+<th class="col_heading level0 col3" id="T_22453_level0_col3">Run</th>
+<th class="col_heading level0 col4" id="T_22453_level0_col4">Probabilidad</th>
+<th class="col_heading level0 col5" id="T_22453_level0_col5">Policy</th>
+<th class="col_heading level0 col6" id="T_22453_level0_col6">source</th>
+<th class="col_heading level0 col7" id="T_22453_level0_col7">reason</th>
+<th class="col_heading level0 col8" id="T_22453_level0_col8">Correlation ID</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<th>0</th>
-<td>3</td>
-<td>INV-10030</td>
-<td>t23-5-fallback-df78bee7-d018-4da4-bdd4-5b811d2...</td>
-<td>None</td>
-<td>None</td>
-<td>None</td>
-<td>NaN</td>
-<td>ml-policy-v1</td>
-<td>0.8</td>
-<td>MANUAL_REVIEW</td>
-<td>fallback</td>
-<td>model_unavailable</td>
-<td>2026-08-26T08:12:24.422636+00:00</td>
+<th class="row_heading level0 row0" id="T_22453_level0_row0">0</th>
+<td class="data row0 col0" id="T_22453_row0_col0">INV-10030</td>
+<td class="data row0 col1" id="T_22453_row0_col1">None</td>
+<td class="data row0 col2" id="T_22453_row0_col2">None</td>
+<td class="data row0 col3" id="T_22453_row0_col3">None</td>
+<td class="data row0 col4" id="T_22453_row0_col4">nan</td>
+<td class="data row0 col5" id="T_22453_row0_col5">MANUAL_REVIEW</td>
+<td class="data row0 col6" id="T_22453_row0_col6">fallback</td>
+<td class="data row0 col7" id="T_22453_row0_col7">model_unavailable</td>
+<td class="data row0 col8" id="T_22453_row0_col8">t23-5-fallback-766417f4-0dfd-4d1f-9b17-8e20736f3a1e</td>
 </tr>
 <tr>
-<th>1</th>
-<td>2</td>
-<td>INV-10030</td>
-<td>t23-5-b-56d33a2f-3c69-49e5-acb7-729e30459468</td>
-<td>invoice-review</td>
-<td>2</td>
-<td>dddca7b27b374e7fa3a30d695ee7228d</td>
-<td>0.77</td>
-<td>ml-policy-v1</td>
-<td>0.8</td>
-<td>AUTO_PROCESS</td>
-<td>model</td>
-<td>probability_below_threshold</td>
-<td>2026-08-26T08:12:24.131324+00:00</td>
+<th class="row_heading level0 row1" id="T_22453_level0_row1">1</th>
+<td class="data row1 col0" id="T_22453_row1_col0">INV-10030</td>
+<td class="data row1 col1" id="T_22453_row1_col1">invoice-review</td>
+<td class="data row1 col2" id="T_22453_row1_col2">2</td>
+<td class="data row1 col3" id="T_22453_row1_col3">3f0c5e489c074ae6a539976fb2285fa3</td>
+<td class="data row1 col4" id="T_22453_row1_col4">0.770</td>
+<td class="data row1 col5" id="T_22453_row1_col5">AUTO_PROCESS</td>
+<td class="data row1 col6" id="T_22453_row1_col6">model</td>
+<td class="data row1 col7" id="T_22453_row1_col7">probability_below_threshold</td>
+<td class="data row1 col8" id="T_22453_row1_col8">t23-5-b-74da0f21-e63b-4c6a-8da3-dd2d8ee59e07</td>
 </tr>
 <tr>
-<th>2</th>
-<td>1</td>
-<td>INV-10030</td>
-<td>t23-5-a-e2b2272a-608c-4602-9962-845d28c2e373</td>
-<td>invoice-review</td>
-<td>1</td>
-<td>e2b7cfd8abbb4631afc7f34aebac39b7</td>
-<td>0.77</td>
-<td>ml-policy-v1</td>
-<td>0.8</td>
-<td>AUTO_PROCESS</td>
-<td>model</td>
-<td>probability_below_threshold</td>
-<td>2026-08-26T08:12:17.587671+00:00</td>
+<th class="row_heading level0 row2" id="T_22453_level0_row2">2</th>
+<td class="data row2 col0" id="T_22453_row2_col0">INV-10030</td>
+<td class="data row2 col1" id="T_22453_row2_col1">invoice-review</td>
+<td class="data row2 col2" id="T_22453_row2_col2">1</td>
+<td class="data row2 col3" id="T_22453_row2_col3">8ab4bf003d6f43c780c27c62c2e4b6e6</td>
+<td class="data row2 col4" id="T_22453_row2_col4">0.770</td>
+<td class="data row2 col5" id="T_22453_row2_col5">AUTO_PROCESS</td>
+<td class="data row2 col6" id="T_22453_row2_col6">model</td>
+<td class="data row2 col7" id="T_22453_row2_col7">probability_below_threshold</td>
+<td class="data row2 col8" id="T_22453_row2_col8">t23-5-a-1fc77675-951d-4a07-8d56-c97fec50b08c</td>
 </tr>
 </tbody>
 </table>
 </div>
 </div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=fallback-explained">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<h2 id="5.-Fallback:-control-de-riesgo,-no-juicio-sobre-el-modelo">5. Fallback: control de riesgo, no juicio sobre el modelo<a class="anchor-link" href="#5.-Fallback:-control-de-riesgo,-no-juicio-sobre-el-modelo">¶</a></h2><p><strong>Qué estás mirando:</strong> la respuesta segura cuando el modelo no está disponible.</p>
+<p><strong>Por qué importa:</strong> fallback no significa que el modelo sea malo. Significa que el servicio o su dependencia no está disponible y el sistema elige controlar el riesgo antes que inventar evidencia.</p>
+<p><strong>Qué ejecuta esta celda:</strong> detiene solo el proceso creado por este notebook y persiste una recomendación de fallback. <strong>⚠ MODIFICA ESTADO</strong> únicamente en la auditoría aislada; es idempotente.</p>
+<p><strong>Qué deberías comprobar:</strong> <code>MANUAL_REVIEW</code>, <code>source=fallback</code>, <code>reason=model_unavailable</code> y probabilidad <code>null</code>.</p>
+<p><strong>Qué significa si falla:</strong> la limpieza o la persistencia de evidencia falló; no reemplaces <code>null</code> por <code>1.0</code>, porque nunca se obtuvo un score.</p>
 </div>
 </div>
 </div>
@@ -8415,26 +8433,22 @@ a.anchor-link {
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea">
-<div class="jp-InputPrompt jp-InputArea-prompt">In [6]:</div>
+<div class="jp-InputPrompt jp-InputArea-prompt">In [7]:</div>
 <div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="cm-editor cm-s-jupyter">
-<div class="highlight hl-ipython3"><pre><span></span><span class="c1"># WARNING: MODIFIES STATE - persist one explicit fallback audit record with no fake score.</span>
+<div class="highlight hl-ipython3"><pre><span></span><span class="c1"># ⚠ MODIFICA ESTADO: registra fallback sin fabricar una probabilidad.</span>
 <span class="n">cleanup_created_process</span><span class="p">(</span><span class="n">api_process</span><span class="p">,</span> <span class="n">created_by_helper</span><span class="o">=</span><span class="n">api_created_by_notebook</span><span class="p">)</span>
 <span class="n">api_process</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="n">api_created_by_notebook</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="n">fallback</span> <span class="o">=</span> <span class="n">fallback_recommendation</span><span class="p">()</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">persist_fallback</span><span class="p">():</span>
-    <span class="n">insert_model_evaluation</span><span class="p">(</span>
-        <span class="n">DEMO_DB</span><span class="p">,</span> <span class="s1">'INV-10030'</span><span class="p">,</span> <span class="n">correlation_id</span><span class="o">=</span><span class="sa">f</span><span class="s1">'t23-5-fallback-</span><span class="si">{</span><span class="n">uuid4</span><span class="p">()</span><span class="si">}</span><span class="s1">'</span><span class="p">,</span> <span class="n">recommendation</span><span class="o">=</span><span class="n">fallback</span><span class="p">,</span>
-        <span class="n">model_name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">model_version</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">run_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">manual_review_probability</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-    <span class="p">)</span>
-    <span class="k">return</span> <span class="p">{</span><span class="s1">'recommendation'</span><span class="p">:</span> <span class="n">fallback</span><span class="o">.</span><span class="n">decision</span><span class="o">.</span><span class="n">value</span><span class="p">,</span> <span class="s1">'source'</span><span class="p">:</span> <span class="n">fallback</span><span class="o">.</span><span class="n">source</span><span class="p">,</span> <span class="s1">'reason'</span><span class="p">:</span> <span class="n">fallback</span><span class="o">.</span><span class="n">reason</span><span class="p">,</span> <span class="s1">'probability'</span><span class="p">:</span> <span class="kc">None</span><span class="p">}</span>
+    <span class="n">correlation_id</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">'t23-5-fallback-</span><span class="si">{</span><span class="n">uuid4</span><span class="p">()</span><span class="si">}</span><span class="s1">'</span>
+    <span class="n">insert_model_evaluation</span><span class="p">(</span><span class="n">DEMO_DB</span><span class="p">,</span> <span class="s1">'INV-10030'</span><span class="p">,</span> <span class="n">correlation_id</span><span class="o">=</span><span class="n">correlation_id</span><span class="p">,</span> <span class="n">recommendation</span><span class="o">=</span><span class="n">fallback</span><span class="p">,</span> <span class="n">model_name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">model_version</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">run_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">manual_review_probability</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+    <span class="k">return</span> <span class="p">{</span><span class="s1">'Factura'</span><span class="p">:</span> <span class="s1">'INV-10030'</span><span class="p">,</span> <span class="s1">'Policy'</span><span class="p">:</span> <span class="n">fallback</span><span class="o">.</span><span class="n">decision</span><span class="o">.</span><span class="n">value</span><span class="p">,</span> <span class="s1">'source'</span><span class="p">:</span> <span class="n">fallback</span><span class="o">.</span><span class="n">source</span><span class="p">,</span> <span class="s1">'reason'</span><span class="p">:</span> <span class="n">fallback</span><span class="o">.</span><span class="n">reason</span><span class="p">,</span> <span class="s1">'Probabilidad'</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span> <span class="s1">'Correlation ID'</span><span class="p">:</span> <span class="n">correlation_id</span><span class="p">}</span>
 <span class="n">fallback_result</span> <span class="o">=</span> <span class="n">run_mutable_action_once</span><span class="p">(</span><span class="s1">'persist-fallback-INV-10030'</span><span class="p">,</span> <span class="n">state</span><span class="p">[</span><span class="s1">'completed_actions'</span><span class="p">],</span> <span class="n">persist_fallback</span><span class="p">)</span>
 <span class="n">state</span><span class="p">[</span><span class="s1">'evaluations'</span><span class="p">][</span><span class="s1">'fallback'</span><span class="p">]</span> <span class="o">=</span> <span class="n">fallback_result</span>
 <span class="n">save_state</span><span class="p">()</span>
-<span class="k">assert</span> <span class="n">fallback_result</span> <span class="o">==</span> <span class="p">{</span><span class="s1">'recommendation'</span><span class="p">:</span> <span class="s1">'MANUAL_REVIEW'</span><span class="p">,</span> <span class="s1">'source'</span><span class="p">:</span> <span class="s1">'fallback'</span><span class="p">,</span> <span class="s1">'reason'</span><span class="p">:</span> <span class="s1">'model_unavailable'</span><span class="p">,</span> <span class="s1">'probability'</span><span class="p">:</span> <span class="kc">None</span><span class="p">}</span>
 <span class="n">display</span><span class="p">(</span><span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">([</span><span class="n">fallback_result</span><span class="p">]))</span>
-<span class="n">display</span><span class="p">(</span><span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">([</span><span class="nb">dict</span><span class="p">(</span><span class="n">row</span><span class="p">)</span> <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">list_model_evaluations</span><span class="p">(</span><span class="n">DEMO_DB</span><span class="p">,</span> <span class="s1">'INV-10030'</span><span class="p">)]))</span>
 </pre></div>
 </div>
 </div>
@@ -8465,18 +8479,22 @@ a.anchor-link {
 <thead>
 <tr style="text-align: right;">
 <th></th>
-<th>probability</th>
+<th>Correlation ID</th>
+<th>Factura</th>
+<th>Policy</th>
+<th>Probabilidad</th>
 <th>reason</th>
-<th>recommendation</th>
 <th>source</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <th>0</th>
+<td>t23-5-fallback-766417f4-0dfd-4d1f-9b17-8e20736...</td>
+<td>INV-10030</td>
+<td>MANUAL_REVIEW</td>
 <td>None</td>
 <td>model_unavailable</td>
-<td>MANUAL_REVIEW</td>
 <td>fallback</td>
 </tr>
 </tbody>
@@ -8484,107 +8502,16 @@ a.anchor-link {
 </div>
 </div>
 </div>
-<div class="jp-OutputArea-child">
-<div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
-<div class="jp-RenderedHTMLCommon jp-RenderedHTML jp-OutputArea-output" data-mime-type="text/html" tabindex="0">
-<div>
-<style scoped="">
-    .dataframe tbody tr th:only-of-type {
-        vertical-align: middle;
-    }
-
-    .dataframe tbody tr th {
-        vertical-align: top;
-    }
-
-    .dataframe thead th {
-        text-align: right;
-    }
-</style>
-<table border="1" class="dataframe">
-<thead>
-<tr style="text-align: right;">
-<th></th>
-<th>id</th>
-<th>invoice_id</th>
-<th>correlation_id</th>
-<th>model_name</th>
-<th>model_version</th>
-<th>run_id</th>
-<th>manual_review_probability</th>
-<th>policy_version</th>
-<th>policy_threshold</th>
-<th>recommendation</th>
-<th>source</th>
-<th>reason</th>
-<th>created_at</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<th>0</th>
-<td>3</td>
-<td>INV-10030</td>
-<td>t23-5-fallback-df78bee7-d018-4da4-bdd4-5b811d2...</td>
-<td>None</td>
-<td>None</td>
-<td>None</td>
-<td>NaN</td>
-<td>ml-policy-v1</td>
-<td>0.8</td>
-<td>MANUAL_REVIEW</td>
-<td>fallback</td>
-<td>model_unavailable</td>
-<td>2026-08-26T08:12:24.422636+00:00</td>
-</tr>
-<tr>
-<th>1</th>
-<td>2</td>
-<td>INV-10030</td>
-<td>t23-5-b-56d33a2f-3c69-49e5-acb7-729e30459468</td>
-<td>invoice-review</td>
-<td>2</td>
-<td>dddca7b27b374e7fa3a30d695ee7228d</td>
-<td>0.77</td>
-<td>ml-policy-v1</td>
-<td>0.8</td>
-<td>AUTO_PROCESS</td>
-<td>model</td>
-<td>probability_below_threshold</td>
-<td>2026-08-26T08:12:24.131324+00:00</td>
-</tr>
-<tr>
-<th>2</th>
-<td>1</td>
-<td>INV-10030</td>
-<td>t23-5-a-e2b2272a-608c-4602-9962-845d28c2e373</td>
-<td>invoice-review</td>
-<td>1</td>
-<td>e2b7cfd8abbb4631afc7f34aebac39b7</td>
-<td>0.77</td>
-<td>ml-policy-v1</td>
-<td>0.8</td>
-<td>AUTO_PROCESS</td>
-<td>model</td>
-<td>probability_below_threshold</td>
-<td>2026-08-26T08:12:17.587671+00:00</td>
-</tr>
-</tbody>
-</table>
 </div>
 </div>
 </div>
-</div>
-</div>
-</div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=runtime-vs-registry">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=closing">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h3 id="Optional-/-advanced:-stale-runtime">Optional / advanced: stale runtime<a class="anchor-link" href="#Optional-/-advanced:-stale-runtime">¶</a></h3><p>When the API is running, moving <code>champion</code> in the Registry does not change <code>/health</code> until the process is restarted. The notebook intentionally does not implement hot reload. Registry state is not runtime state.</p>
-<p>The final cleanup has already stopped the process started by this notebook. The isolated files live under <code>var/t23_5_demo/</code>; delete only that directory when the classroom session is over.</p>
+<h2 id="Idea-de-cierre">Idea de cierre<a class="anchor-link" href="#Idea-de-cierre">¶</a></h2><p>Una versión <code>champion</code> define una referencia en Registry. Un reinicio más <code>/health</code> demuestra qué versión usa el runtime. <code>/predict</code> aporta una probabilidad; <code>ml-policy-v1</code> entrega una recomendación; la auditoría deja contexto para reconstruir la evaluación. La decisión final sigue siendo una responsabilidad separada.</p>
 </div>
 </div>
 </div>
