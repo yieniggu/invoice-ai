@@ -6,9 +6,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from invoiceops.domain.models import InvoiceStatus
+from invoiceops.domain.policy import recommend_from_probability
 from invoiceops.legacy import faults
 from invoiceops.legacy.app import create_app
-from invoiceops.legacy.db import _connect, get_invoice, list_decision_events
+from invoiceops.legacy.db import (
+    _connect,
+    get_invoice,
+    insert_model_evaluation,
+    list_decision_events,
+)
 from invoiceops.legacy.seed import seed_invoices
 
 
@@ -177,6 +183,30 @@ def test_invoice_detail(db_path: Path) -> None:
     assert ">3.40x<" in response.text
     assert "Country risk" in response.text
     assert ">High<" in response.text
+    assert "Model evaluations" in response.text
+    assert "No model evaluations recorded." in response.text
+
+
+def test_invoice_detail_shows_model_evaluation_history(db_path: Path) -> None:
+    insert_model_evaluation(
+        db_path,
+        "INV-10030",
+        correlation_id="corr-model",
+        model_name="manual-review-model",
+        model_version="7",
+        run_id="run-123",
+        manual_review_probability=0.82,
+        recommendation=recommend_from_probability(0.82),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    response = authenticated_client(db_path).get("/invoices/INV-10030")
+
+    assert "Model evaluations" in response.text
+    assert "0.82" in response.text
+    assert "manual-review-model" in response.text
+    assert "probability_at_or_above_threshold" in response.text
+    assert "corr-model" in response.text
 
 
 def test_faults_page_and_button_label_fault(db_path: Path) -> None:

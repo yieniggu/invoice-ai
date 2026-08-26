@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from invoiceops.domain.models import CountryRisk, Decision, Invoice, InvoiceStatus
+from invoiceops.domain.policy import Recommendation
 from invoiceops.domain.rules import RULE_VERSION
 
 DEFAULT_DB_PATH = Path("var/invoiceops.db")
@@ -286,8 +287,68 @@ def list_decision_events(
         ).fetchall()
 
 
+def insert_model_evaluation(
+    db_path: str | Path | None,
+    invoice_id: str,
+    *,
+    correlation_id: str,
+    recommendation: Recommendation,
+    model_name: str | None = None,
+    model_version: str | None = None,
+    run_id: str | None = None,
+    manual_review_probability: float | None = None,
+    created_at: str | None = None,
+) -> None:
+    created_at = created_at or datetime.now(UTC).isoformat()
+
+    with _connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute(
+            "SELECT 1 FROM invoices WHERE invoice_id = ?", (invoice_id,)
+        ).fetchone() is None:
+            raise LookupError(f"Invoice not found: {invoice_id}")
+        connection.execute(
+            """
+            INSERT INTO model_evaluations (
+                invoice_id, correlation_id, model_name, model_version, run_id,
+                manual_review_probability, policy_version, policy_threshold,
+                recommendation, source, reason, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                invoice_id,
+                correlation_id,
+                model_name,
+                model_version,
+                run_id,
+                manual_review_probability,
+                recommendation.policy_version,
+                recommendation.threshold,
+                recommendation.decision.value,
+                recommendation.source,
+                recommendation.reason,
+                created_at,
+            ),
+        )
+
+
+def list_model_evaluations(
+    db_path: str | Path | None, invoice_id: str
+) -> list[sqlite3.Row]:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            """
+            SELECT * FROM model_evaluations
+            WHERE invoice_id = ?
+            ORDER BY created_at DESC, id DESC
+            """,
+            (invoice_id,),
+        ).fetchall()
+
+
 def reset_db(db_path: str | Path | None = None) -> None:
     with _connect(db_path) as connection:
+        connection.execute("DROP TABLE IF EXISTS model_evaluations")
         connection.execute("DROP TABLE IF EXISTS decision_events")
         connection.execute("DROP TABLE IF EXISTS invoices")
         connection.execute("DROP TABLE IF EXISTS schema_migrations")

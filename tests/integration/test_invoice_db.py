@@ -3,12 +3,16 @@ from pathlib import Path
 import pytest
 
 from invoiceops.domain.models import CountryRisk, Decision, InvoiceStatus
+from invoiceops.domain.policy import fallback_recommendation, recommend_from_probability
 from invoiceops.legacy.db import (
     InvalidInvoiceTransition,
     _connect,
     get_invoice,
+    insert_model_evaluation,
     list_decision_events,
     list_invoices,
+    list_model_evaluations,
+    reset_db,
     update_invoice_decision,
 )
 from invoiceops.legacy.seed import seed_invoices
@@ -135,6 +139,130 @@ def test_database_path_can_be_overridden_by_environment(
 
     assert db_path.exists()
     assert len(list_invoices().invoices) == 8
+
+
+def test_model_evaluations_are_persisted_per_invoice_without_deciding_it(db_path: Path) -> None:
+    insert_model_evaluation(
+        db_path,
+        "INV-10023",
+        correlation_id="corr-model",
+        model_name="manual-review-model",
+        model_version="7",
+        run_id="run-123",
+        manual_review_probability=0.82,
+        recommendation=recommend_from_probability(0.82),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    insert_model_evaluation(
+        db_path,
+        "INV-10024",
+        correlation_id="corr-other",
+        model_name="manual-review-model",
+        model_version="7",
+        run_id="run-124",
+        manual_review_probability=0.10,
+        recommendation=recommend_from_probability(0.10),
+        created_at="2026-01-02T00:00:00+00:00",
+    )
+
+    evaluations = list_model_evaluations(db_path, "INV-10023")
+
+    assert len(evaluations) == 1
+    assert dict(evaluations[0]) == {
+        "id": 1,
+        "invoice_id": "INV-10023",
+        "correlation_id": "corr-model",
+        "model_name": "manual-review-model",
+        "model_version": "7",
+        "run_id": "run-123",
+        "manual_review_probability": 0.82,
+        "policy_version": "ml-policy-v1",
+        "policy_threshold": 0.80,
+        "recommendation": "MANUAL_REVIEW",
+        "source": "model",
+        "reason": "probability_at_or_above_threshold",
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }
+    assert get_invoice(db_path, "INV-10023").status is InvoiceStatus.PENDING
+    assert list_decision_events(db_path, "INV-10023") == []
+
+
+def test_model_evaluations_preserve_fallback_without_model_values(db_path: Path) -> None:
+    insert_model_evaluation(
+        db_path,
+        "INV-10023",
+        correlation_id="corr-fallback",
+        recommendation=fallback_recommendation(),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    evaluation = list_model_evaluations(db_path, "INV-10023")[0]
+
+    assert evaluation["manual_review_probability"] is None
+    assert evaluation["model_name"] is None
+    assert evaluation["model_version"] is None
+    assert evaluation["run_id"] is None
+    assert evaluation["recommendation"] == "MANUAL_REVIEW"
+    assert evaluation["source"] == "fallback"
+    assert evaluation["reason"] == "model_unavailable"
+
+
+def test_model_evaluation_requires_an_existing_invoice(db_path: Path) -> None:
+    with pytest.raises(LookupError, match="Invoice not found: INV-MISSING"):
+        insert_model_evaluation(
+            db_path,
+            "INV-MISSING",
+            correlation_id="corr-missing",
+            recommendation=fallback_recommendation(),
+        )
+
+    assert list_model_evaluations(db_path, "INV-MISSING") == []
+
+
+def test_model_evaluations_are_listed_newest_first(db_path: Path) -> None:
+    recommendation = recommend_from_probability(0.10)
+    insert_model_evaluation(
+        db_path,
+        "INV-10023",
+        correlation_id="corr-first",
+        model_name="manual-review-model",
+        model_version="7",
+        run_id="run-1",
+        manual_review_probability=0.10,
+        recommendation=recommendation,
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    insert_model_evaluation(
+        db_path,
+        "INV-10023",
+        correlation_id="corr-second",
+        model_name="manual-review-model",
+        model_version="7",
+        run_id="run-2",
+        manual_review_probability=0.10,
+        recommendation=recommendation,
+        created_at="2026-01-02T00:00:00+00:00",
+    )
+
+    assert [evaluation["correlation_id"] for evaluation in list_model_evaluations(db_path, "INV-10023")] == [
+        "corr-second",
+        "corr-first",
+    ]
+
+
+def test_reset_and_seed_leave_no_model_evaluations(db_path: Path) -> None:
+    insert_model_evaluation(
+        db_path,
+        "INV-10023",
+        correlation_id="corr-before-reset",
+        recommendation=fallback_recommendation(),
+    )
+
+    reset_db(db_path)
+    seed_invoices(db_path)
+
+    with _connect(db_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM model_evaluations").fetchone()[0] == 0
 
 
 def insert_invoices(db_path: Path, *, count: int) -> None:

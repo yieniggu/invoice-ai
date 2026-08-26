@@ -26,6 +26,7 @@ from invoiceops.legacy.db import (
     init_db,
     list_decision_events,
     list_invoices,
+    list_model_evaluations,
     update_invoice_decision,
 )
 
@@ -191,6 +192,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             context={
                 "invoice": invoice,
                 "events": reversed(list_decision_events(db_path, invoice_id)),
+                "model_evaluations": list_model_evaluations(db_path, invoice_id),
                 "faults": faults.state,
             },
         )
@@ -270,6 +272,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
                 context={
                     "invoice": invoice,
                     "events": reversed(list_decision_events(db_path, invoice_id)),
+                    "model_evaluations": list_model_evaluations(db_path, invoice_id),
                     "error": "Invoice cannot be decided from its current status.",
                 },
                 status_code=409,

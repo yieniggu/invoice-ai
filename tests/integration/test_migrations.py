@@ -32,12 +32,75 @@ def test_migrations_apply_in_order(tmp_path: Path) -> None:
 def test_migrations_are_idempotent(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     db_path = tmp_path / "invoiceops.db"
 
-    assert run_migrations(db_path) == 2
+    assert run_migrations(db_path) == 3
     assert run_migrations(db_path) == 0
 
     assert "0 migrations pending" in capsys.readouterr().out
     with _connect(db_path) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
+        versions = connection.execute(
+            "SELECT version, name FROM schema_migrations ORDER BY version"
+        ).fetchall()
+    assert [(row["version"], row["name"]) for row in versions] == [
+        (1, "initial"),
+        (2, "ml_risk_context"),
+        (3, "model_evaluations"),
+    ]
+
+
+def test_model_evaluations_migration_has_the_expected_schema(tmp_path: Path) -> None:
+    db_path = tmp_path / "invoiceops.db"
+
+    run_migrations(db_path)
+
+    with _connect(db_path) as connection:
+        evaluations = connection.execute("PRAGMA table_info(model_evaluations)").fetchall()
+        foreign_keys = connection.execute("PRAGMA foreign_key_list(model_evaluations)").fetchall()
+        indexes = connection.execute("PRAGMA index_list(model_evaluations)").fetchall()
+    assert [row["name"] for row in evaluations] == [
+        "id",
+        "invoice_id",
+        "correlation_id",
+        "model_name",
+        "model_version",
+        "run_id",
+        "manual_review_probability",
+        "policy_version",
+        "policy_threshold",
+        "recommendation",
+        "source",
+        "reason",
+        "created_at",
+    ]
+    assert foreign_keys[0]["table"] == "invoices"
+    assert [index["name"] for index in indexes] == ["idx_model_evaluations_invoice_id"]
+
+
+def test_model_evaluations_migration_rejects_unknown_sources(tmp_path: Path) -> None:
+    db_path = tmp_path / "invoiceops.db"
+
+    run_migrations(db_path)
+
+    with _connect(db_path) as connection, pytest.raises(
+        sqlite3.IntegrityError, match="CHECK constraint failed"
+    ):
+        connection.execute(
+            """
+            INSERT INTO model_evaluations (
+                invoice_id, correlation_id, policy_version, policy_threshold,
+                recommendation, source, reason, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "INV-INVALID",
+                "corr-invalid",
+                "ml-policy-v1",
+                0.8,
+                "MANUAL_REVIEW",
+                "unknown",
+                "invalid-source-test",
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
 
 
 def test_init_db_applies_pending_migrations(
@@ -163,7 +226,7 @@ def test_legacy_database_is_adopted_without_changing_data(tmp_path: Path) -> Non
             "SELECT sql FROM sqlite_master WHERE name = 'invoices'"
         ).fetchone()[0]
 
-    assert run_migrations(db_path) == 1
+    assert run_migrations(db_path) == 2
 
     with _connect(db_path) as connection:
         after = connection.execute(
@@ -182,7 +245,7 @@ def test_legacy_database_is_adopted_without_changing_data(tmp_path: Path) -> Non
         ).fetchone()
     assert after != before
     assert count == 1
-    assert [row["version"] for row in versions] == [1, 2]
+    assert [row["version"] for row in versions] == [1, 2, 3]
     assert tuple(risk_context) == (0, 0, 0, 1.0, "medium")
 
 
@@ -223,7 +286,7 @@ def test_create_app_initializes_an_empty_database(tmp_path: Path) -> None:
     create_app(db_path)
 
     with _connect(db_path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 3
         assert connection.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 0
 
 
@@ -241,6 +304,6 @@ def test_reset_demo_migrates_then_seeds(tmp_path: Path, monkeypatch: pytest.Monk
     )
 
     with _connect(db_path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 3
         assert connection.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 8
     assert "Invoices: 8" in result.stdout
