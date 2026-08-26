@@ -1,3 +1,5 @@
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -116,3 +118,96 @@ def test_train_cli_generates_dataset_and_prints_model_metrics(tmp_path: Path, mo
         "roc_auc",
     }
     assert (tmp_path / "data" / "invoice-risk-v1" / "test.csv").exists()
+
+
+def test_train_cli_creates_an_invoice_risk_tracking_run(tmp_path: Path) -> None:
+    tracking_dir = tmp_path / "mlruns"
+    environment = os.environ | {
+        "MLFLOW_ALLOW_FILE_STORE": "true",
+        "MLFLOW_TRACKING_URI": tracking_dir.as_uri(),
+    }
+
+    subprocess.run(
+        [sys.executable, "-m", "invoiceops.ml.train", "--model", "dummy"],
+        cwd=tmp_path,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert tracking_dir.exists(), "training did not create the configured MLflow tracking store"
+
+
+def test_train_cli_logs_tracking_metadata_metrics_and_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tracking_dir = tmp_path / "mlruns"
+    tracking_uri = tracking_dir.as_uri()
+    environment = os.environ | {
+        "MLFLOW_ALLOW_FILE_STORE": "true",
+        "MLFLOW_TRACKING_URI": tracking_uri,
+    }
+
+    subprocess.run(
+        [sys.executable, "-m", "invoiceops.ml.train", "--model", "random_forest"],
+        cwd=tmp_path,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert tracking_dir.exists(), "training did not create the configured MLflow tracking store"
+
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    from mlflow.tracking import MlflowClient
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    experiment = client.get_experiment_by_name("invoice-risk")
+    assert experiment is not None
+    runs = client.search_runs([experiment.experiment_id])
+    assert len(runs) == 1
+
+    run = runs[0]
+    assert (run.info.run_name, len(run.inputs.dataset_inputs)) == (
+        "random_forest-invoice-risk-v1",
+        2,
+    )
+    dataset_inputs_by_context = {
+        {tag.key: tag.value for tag in dataset_input.tags}["mlflow.data.context"]: dataset_input
+        for dataset_input in run.inputs.dataset_inputs
+    }
+    assert set(dataset_inputs_by_context) == {"training", "validation"}
+    assert "test" not in dataset_inputs_by_context
+
+    expected_inputs = {"training": ("training", "train.csv"), "validation": ("validation", "validation.csv")}
+    for context, (name, source) in expected_inputs.items():
+        dataset = dataset_inputs_by_context[context].dataset
+        assert dataset.name == name
+        assert json.loads(dataset.source)["uri"] == source
+        assert {column["name"] for column in json.loads(dataset.schema)["mlflow_colspec"]} == set(
+            MODEL_FEATURES + [TARGET]
+        )
+    assert run.data.params["model_type"] == "random_forest"
+    assert run.data.params["dataset_version"] == "invoice-risk-v1"
+    assert run.data.params["feature_schema_version"] == "invoice-features-v1"
+    assert run.data.params["random_state"] == "20260826"
+    assert run.data.params["n_estimators"] == "100"
+    assert set(run.data.metrics) == {"accuracy", "precision", "recall", "f1", "roc_auc"}
+    assert run.data.tags["dataset_sha256"]
+    assert run.data.tags["git_commit"] == "unknown"
+    assert run.data.tags["target"] == "manual_review_required"
+    assert {artifact.path for artifact in client.list_artifacts(run.info.run_id)} == {
+        "feature_schema.json",
+        "metrics.json",
+        "pipeline",
+    }
+    metrics_path = client.download_artifacts(run.info.run_id, "metrics.json")
+    schema_path = client.download_artifacts(run.info.run_id, "feature_schema.json")
+    assert json.loads(Path(metrics_path).read_text(encoding="utf-8")) == run.data.metrics
+    assert json.loads(Path(schema_path).read_text(encoding="utf-8")) == {
+        "feature_schema_version": "invoice-features-v1",
+        "features": MODEL_FEATURES,
+        "target": "manual_review_required",
+    }
