@@ -118,6 +118,35 @@ def test_honors_model_and_tracking_uri_environment_variables(
     assert tracking_uris == ["http://mlflow.test"]
 
 
+def test_resolves_alias_metadata_when_model_info_omits_version_and_run_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = StubModel()
+    alias_calls: list[tuple[str, str]] = []
+
+    class StubMlflowClient:
+        def get_model_version_by_alias(self, name: str, alias: str) -> SimpleNamespace:
+            alias_calls.append((name, alias))
+            return SimpleNamespace(version="12", run_id="run-789")
+
+    monkeypatch.setattr(model_api.mlflow.sklearn, "load_model", lambda _: model)
+    monkeypatch.setattr(
+        model_api.mlflow.models,
+        "get_model_info",
+        lambda _: SimpleNamespace(run_id=None, registered_model_version=None),
+    )
+    monkeypatch.setattr(model_api, "MlflowClient", StubMlflowClient)
+
+    with TestClient(model_api.create_app()) as test_client:
+        health_response = test_client.get("/health")
+        predict_response = test_client.post("/predict", json=VALID_FEATURES)
+
+    expected_metadata = {"model_name": "invoice-review", "model_version": "12", "run_id": "run-789"}
+    assert health_response.json() == {"status": "ok", **expected_metadata}
+    assert predict_response.json() == {"manual_review_probability": 0.8, **expected_metadata}
+    assert alias_calls == [("invoice-review", "champion")]
+
+
 @pytest.mark.parametrize("field", VALID_FEATURES)
 def test_predict_rejects_each_missing_feature(
     client: tuple[TestClient, StubModel, list[str]], field: str

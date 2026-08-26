@@ -8,6 +8,7 @@ import mlflow.sklearn
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from mlflow.exceptions import MlflowException
+from mlflow.tracking import MlflowClient
 
 from invoiceops.ml.features import MODEL_FEATURES
 from invoiceops.model_api.schemas import (
@@ -39,6 +40,13 @@ def _model_name_from_uri(model_uri: str) -> str:
     return model_uri
 
 
+def _model_alias_from_uri(model_uri: str) -> str | None:
+    if not model_uri.startswith("models:/"):
+        return None
+    _, separator, alias = model_uri.removeprefix("models:/").partition("@")
+    return alias if separator and alias else None
+
+
 def _mark_model_unavailable(app: FastAPI, error: Exception) -> None:
     app.state.model_unavailable = True
     app.state.model_error_type = type(error).__name__
@@ -53,6 +61,11 @@ def _model_metadata(model_uri: str, model_info: object) -> ModelMetadata:
     model_name = _model_name_from_uri(model_uri)
     model_version = model_info.registered_model_version
     run_id = model_info.run_id
+    alias = _model_alias_from_uri(model_uri)
+    if alias is not None and (model_version is None or not run_id):
+        model_version_info = MlflowClient().get_model_version_by_alias(model_name, alias)
+        model_version = model_version_info.version
+        run_id = model_version_info.run_id
     if (
         not model_name
         or model_version is None
