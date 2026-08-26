@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 import mlflow
 import mlflow.sklearn
 import pandas as pd
+from mlflow.data.sources import LocalArtifactDatasetSource
 from sklearn.pipeline import Pipeline
 
 from invoiceops.ml.data import SPLIT_FILENAMES, TARGET, generate_synthetic_dataset
@@ -115,7 +116,9 @@ def _track_run(
             mlflow.log_input(
                 mlflow.data.from_pandas(
                     train[MODEL_FEATURES + [TARGET]],
-                    source="train.csv",
+                    source=LocalArtifactDatasetSource(
+                        (dataset_dir / "train.csv").resolve().as_uri()
+                    ),
                     targets=TARGET,
                     name="training",
                 ),
@@ -124,7 +127,9 @@ def _track_run(
             mlflow.log_input(
                 mlflow.data.from_pandas(
                     validation[MODEL_FEATURES + [TARGET]],
-                    source="validation.csv",
+                    source=LocalArtifactDatasetSource(
+                        (dataset_dir / "validation.csv").resolve().as_uri()
+                    ),
                     targets=TARGET,
                     name="validation",
                 ),

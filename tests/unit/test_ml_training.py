@@ -181,7 +181,11 @@ def test_train_cli_logs_tracking_metadata_metrics_and_artifacts(
     assert set(dataset_inputs_by_context) == {"training", "validation"}
     assert "test" not in dataset_inputs_by_context
 
-    expected_inputs = {"training": ("training", "train.csv"), "validation": ("validation", "validation.csv")}
+    dataset_dir = tmp_path / "data" / "invoice-risk-v1"
+    expected_inputs = {
+        "training": ("training", (dataset_dir / "train.csv").resolve().as_uri()),
+        "validation": ("validation", (dataset_dir / "validation.csv").resolve().as_uri()),
+    }
     for context, (name, source) in expected_inputs.items():
         dataset = dataset_inputs_by_context[context].dataset
         assert dataset.name == name
