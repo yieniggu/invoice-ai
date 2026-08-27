@@ -303,9 +303,12 @@ def insert_model_evaluation(
 
     with _connect(db_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        if connection.execute(
-            "SELECT 1 FROM invoices WHERE invoice_id = ?", (invoice_id,)
-        ).fetchone() is None:
+        if (
+            connection.execute(
+                "SELECT 1 FROM invoices WHERE invoice_id = ?", (invoice_id,)
+            ).fetchone()
+            is None
+        ):
             raise LookupError(f"Invoice not found: {invoice_id}")
         connection.execute(
             """
@@ -314,6 +317,7 @@ def insert_model_evaluation(
                 manual_review_probability, policy_version, policy_threshold,
                 recommendation, source, reason, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT DO NOTHING
             """,
             (
                 invoice_id,
@@ -332,9 +336,7 @@ def insert_model_evaluation(
         )
 
 
-def list_model_evaluations(
-    db_path: str | Path | None, invoice_id: str
-) -> list[sqlite3.Row]:
+def list_model_evaluations(db_path: str | Path | None, invoice_id: str) -> list[sqlite3.Row]:
     with _connect(db_path) as connection:
         return connection.execute(
             """

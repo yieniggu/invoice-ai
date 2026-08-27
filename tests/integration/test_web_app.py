@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 from uuid import UUID
@@ -185,6 +186,26 @@ def test_invoice_detail(db_path: Path) -> None:
     assert ">High<" in response.text
     assert "Model evaluations" in response.text
     assert "No model evaluations recorded." in response.text
+    assert "Teaching demo: eight model features" in response.text
+    for feature in (
+        "invoice_amount_cents",
+        "has_purchase_order",
+        "three_way_match",
+        "vendor_tenure_days",
+        "previous_incidents_12m",
+        "bank_account_recently_changed",
+        "amount_vs_vendor_median",
+        "country_risk",
+    ):
+        assert feature in response.text
+    assert "portal does not call the Model API" in response.text
+
+    other_demo_response = authenticated_client(db_path).get("/invoices/INV-10029")
+    non_demo_response = authenticated_client(db_path).get("/invoices/INV-10023")
+
+    assert "Teaching demo: eight model features" in other_demo_response.text
+    assert "2200" in other_demo_response.text
+    assert "Teaching demo: eight model features" not in non_demo_response.text
 
 
 def test_invoice_detail_shows_model_evaluation_history(db_path: Path) -> None:
@@ -207,6 +228,41 @@ def test_invoice_detail_shows_model_evaluation_history(db_path: Path) -> None:
     assert "manual-review-model" in response.text
     assert "probability_at_or_above_threshold" in response.text
     assert "corr-model" in response.text
+    assert "ml-policy-v1 at 0.8" in response.text
+    assert "model" in response.text
+
+
+def test_notebook_05_and_portal_share_the_operational_database_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "invoiceops.db"
+    monkeypatch.setenv("INVOICEOPS_DB_PATH", str(db_path))
+    seed_invoices()
+    insert_model_evaluation(
+        None,
+        "INV-10030",
+        correlation_id="notebook-05-visible-in-portal",
+        recommendation=recommend_from_probability(0.82),
+        model_name="invoice-review",
+        model_version="7",
+        run_id="run-notebook-05",
+        manual_review_probability=0.82,
+    )
+
+    notebook_path = Path(__file__).parents[2] / "notebooks" / "05_serving_policy_and_audit.ipynb"
+    notebook = json.loads(notebook_path.read_text())
+    notebook_source = "\n".join(
+        "".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code"
+    )
+    client = TestClient(create_app())
+    client.post("/login", data={"username": "analyst", "password": "demo-password"})
+
+    response = client.get("/invoices/INV-10030")
+
+    assert "INVOICEOPS_DB_PATH" in notebook_source
+    assert response.status_code == 200
+    assert "notebook-05-visible-in-portal" in response.text
+    assert "invoice-review" in response.text
 
 
 def test_faults_page_and_button_label_fault(db_path: Path) -> None:

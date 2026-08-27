@@ -211,7 +211,9 @@ def test_model_loading_failure_keeps_app_running_and_returns_safe_unavailable_re
     monkeypatch.setattr(
         model_api.mlflow.models,
         "get_model_info",
-        fail if failing_operation == "get_model_info" else lambda _: SimpleNamespace(run_id="run-123", registered_model_version=7),
+        fail
+        if failing_operation == "get_model_info"
+        else lambda _: SimpleNamespace(run_id="run-123", registered_model_version=7),
     )
     monkeypatch.setattr(
         model_api.mlflow.sklearn,

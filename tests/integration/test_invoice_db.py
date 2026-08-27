@@ -141,6 +141,58 @@ def test_database_path_can_be_overridden_by_environment(
     assert len(list_invoices().invoices) == 8
 
 
+def test_seed_is_idempotent_and_preserves_existing_decisions_and_audits(db_path: Path) -> None:
+    update_invoice_decision(
+        db_path,
+        "INV-10023",
+        Decision.AUTO_PROCESS,
+        actor="demo-user",
+        correlation_id="decision-before-reseed",
+    )
+    insert_model_evaluation(
+        db_path,
+        "INV-10024",
+        correlation_id="audit-before-reseed",
+        recommendation=fallback_recommendation(),
+    )
+
+    seed_invoices(db_path)
+
+    assert [invoice.invoice_id for invoice in list_invoices(db_path).invoices] == [
+        "INV-10023",
+        "INV-10024",
+        "INV-10025",
+        "INV-10026",
+        "INV-10027",
+        "INV-10028",
+        "INV-10029",
+        "INV-10030",
+    ]
+    assert get_invoice(db_path, "INV-10023").status is InvoiceStatus.AUTO_PROCESSED
+    assert [event["correlation_id"] for event in list_decision_events(db_path, "INV-10023")] == [
+        "decision-before-reseed"
+    ]
+    assert [
+        evaluation["correlation_id"] for evaluation in list_model_evaluations(db_path, "INV-10024")
+    ] == ["audit-before-reseed"]
+
+
+def test_pedagogical_audit_identity_is_idempotent_without_notebook_state(db_path: Path) -> None:
+    correlation_id = "notebook-05:INV-10030:champion-A"
+
+    for _ in range(2):
+        insert_model_evaluation(
+            db_path,
+            "INV-10030",
+            correlation_id=correlation_id,
+            recommendation=fallback_recommendation(),
+        )
+
+    assert [
+        evaluation["correlation_id"] for evaluation in list_model_evaluations(db_path, "INV-10030")
+    ] == [correlation_id]
+
+
 def test_model_evaluations_are_persisted_per_invoice_without_deciding_it(db_path: Path) -> None:
     insert_model_evaluation(
         db_path,
@@ -244,7 +296,9 @@ def test_model_evaluations_are_listed_newest_first(db_path: Path) -> None:
         created_at="2026-01-02T00:00:00+00:00",
     )
 
-    assert [evaluation["correlation_id"] for evaluation in list_model_evaluations(db_path, "INV-10023")] == [
+    assert [
+        evaluation["correlation_id"] for evaluation in list_model_evaluations(db_path, "INV-10023")
+    ] == [
         "corr-second",
         "corr-first",
     ]

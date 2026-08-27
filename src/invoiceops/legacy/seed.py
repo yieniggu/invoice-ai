@@ -154,6 +154,7 @@ def seed_invoices(db_path: str | Path | None = None) -> None:
                 bank_account_recently_changed, amount_vs_vendor_median, country_risk,
                 created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(invoice_id) DO NOTHING
             """,
             rows,
         )

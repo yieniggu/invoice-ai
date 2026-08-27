@@ -6,8 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from invoiceops.domain.policy import fallback_recommendation
 from invoiceops.legacy.app import create_app
-from invoiceops.legacy.db import _connect, init_db, run_migrations
+from invoiceops.legacy.db import _connect, init_db, insert_model_evaluation, run_migrations
+from invoiceops.legacy.seed import seed_invoices
 
 
 def test_migrations_apply_in_order(tmp_path: Path) -> None:
@@ -32,7 +34,7 @@ def test_migrations_apply_in_order(tmp_path: Path) -> None:
 def test_migrations_are_idempotent(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     db_path = tmp_path / "invoiceops.db"
 
-    assert run_migrations(db_path) == 3
+    assert run_migrations(db_path) == 4
     assert run_migrations(db_path) == 0
 
     assert "0 migrations pending" in capsys.readouterr().out
@@ -44,6 +46,7 @@ def test_migrations_are_idempotent(tmp_path: Path, capsys: pytest.CaptureFixture
         (1, "initial"),
         (2, "ml_risk_context"),
         (3, "model_evaluations"),
+        (4, "notebook_audit_idempotency"),
     ]
 
 
@@ -72,7 +75,14 @@ def test_model_evaluations_migration_has_the_expected_schema(tmp_path: Path) -> 
         "created_at",
     ]
     assert foreign_keys[0]["table"] == "invoices"
-    assert [index["name"] for index in indexes] == ["idx_model_evaluations_invoice_id"]
+    assert {index["name"] for index in indexes} == {
+        "idx_model_evaluations_invoice_id",
+        "idx_model_evaluations_notebook_operation",
+    }
+    notebook_index = next(
+        index for index in indexes if index["name"] == "idx_model_evaluations_notebook_operation"
+    )
+    assert notebook_index["unique"] == 1
 
 
 def test_model_evaluations_migration_rejects_unknown_sources(tmp_path: Path) -> None:
@@ -80,8 +90,9 @@ def test_model_evaluations_migration_rejects_unknown_sources(tmp_path: Path) -> 
 
     run_migrations(db_path)
 
-    with _connect(db_path) as connection, pytest.raises(
-        sqlite3.IntegrityError, match="CHECK constraint failed"
+    with (
+        _connect(db_path) as connection,
+        pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"),
     ):
         connection.execute(
             """
@@ -226,7 +237,7 @@ def test_legacy_database_is_adopted_without_changing_data(tmp_path: Path) -> Non
             "SELECT sql FROM sqlite_master WHERE name = 'invoices'"
         ).fetchone()[0]
 
-    assert run_migrations(db_path) == 2
+    assert run_migrations(db_path) == 3
 
     with _connect(db_path) as connection:
         after = connection.execute(
@@ -245,7 +256,7 @@ def test_legacy_database_is_adopted_without_changing_data(tmp_path: Path) -> Non
         ).fetchone()
     assert after != before
     assert count == 1
-    assert [row["version"] for row in versions] == [1, 2, 3]
+    assert [row["version"] for row in versions] == [1, 2, 3, 4]
     assert tuple(risk_context) == (0, 0, 0, 1.0, "medium")
 
 
@@ -286,16 +297,21 @@ def test_create_app_initializes_an_empty_database(tmp_path: Path) -> None:
     create_app(db_path)
 
     with _connect(db_path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 3
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 4
         assert connection.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 0
 
 
 def test_reset_demo_migrates_then_seeds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "invoiceops.db"
+    demo_root = tmp_path / "notebook-state"
+    state_path = demo_root / "state.json"
+    demo_root.mkdir()
+    state_path.write_text('{"completed_actions": {}}\n')
     monkeypatch.setenv("INVOICEOPS_DB_PATH", str(db_path))
+    monkeypatch.setenv("INVOICEOPS_NOTEBOOK_DEMO_ROOT", str(demo_root))
 
     result = subprocess.run(
-        [sys.executable, "scripts/reset_demo.py"],
+        [sys.executable, "scripts/reset_demo.py", "--confirm"],
         cwd=Path(__file__).parents[2],
         env=os.environ.copy(),
         check=True,
@@ -304,6 +320,36 @@ def test_reset_demo_migrates_then_seeds(tmp_path: Path, monkeypatch: pytest.Monk
     )
 
     with _connect(db_path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 3
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 4
         assert connection.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 8
     assert "Invoices: 8" in result.stdout
+    assert f"Resetting database: {db_path}" in result.stdout
+    assert not state_path.exists()
+
+
+def test_reset_demo_without_confirmation_does_not_mutate_existing_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "invoiceops.db"
+    monkeypatch.setenv("INVOICEOPS_DB_PATH", str(db_path))
+    seed_invoices(db_path)
+    insert_model_evaluation(
+        db_path,
+        "INV-10030",
+        correlation_id="audit-before-unconfirmed-reset",
+        recommendation=fallback_recommendation(),
+    )
+
+    result = subprocess.run(
+        [sys.executable, "scripts/reset_demo.py"],
+        cwd=Path(__file__).parents[2],
+        env=os.environ.copy(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    with _connect(db_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 8
+        assert connection.execute("SELECT COUNT(*) FROM model_evaluations").fetchone()[0] == 1
+    assert result.returncode != 0

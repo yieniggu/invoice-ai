@@ -54,7 +54,7 @@ def test_pipelines_train_on_features_and_predict_probabilities(
 
 
 def test_logistic_pipeline_scales_numeric_features_and_ignores_unknown_categories(
-    train_validation_frames: tuple[pd.DataFrame, pd.DataFrame]
+    train_validation_frames: tuple[pd.DataFrame, pd.DataFrame],
 ) -> None:
     train, validation = train_validation_frames
     pipeline = build_logistic_pipeline().fit(train[MODEL_FEATURES], train[TARGET])
@@ -71,7 +71,7 @@ def test_logistic_pipeline_scales_numeric_features_and_ignores_unknown_categorie
 
 
 def test_random_forest_pipeline_exposes_estimators_and_feature_importances(
-    train_validation_frames: tuple[pd.DataFrame, pd.DataFrame]
+    train_validation_frames: tuple[pd.DataFrame, pd.DataFrame],
 ) -> None:
     train, validation = train_validation_frames
     pipeline = build_random_forest_pipeline().fit(train[MODEL_FEATURES], train[TARGET])
@@ -80,9 +80,10 @@ def test_random_forest_pipeline_exposes_estimators_and_feature_importances(
 
     assert classifier.random_state == 20260826
     assert classifier.estimators_
-    assert classifier.feature_importances_.size == pipeline.named_steps[
-        "preprocessor"
-    ].get_feature_names_out().size
+    assert (
+        classifier.feature_importances_.size
+        == pipeline.named_steps["preprocessor"].get_feature_names_out().size
+    )
     assert pipeline.predict_proba(validation[MODEL_FEATURES]).shape == (len(validation), 2)
 
 

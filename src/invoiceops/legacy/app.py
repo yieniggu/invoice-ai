@@ -51,7 +51,9 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         if actor is None:
             raise HTTPException(status_code=401, detail="Authentication is required.")
         if actor not in settings.allowed_decision_principals:
-            raise HTTPException(status_code=403, detail="Principal is not authorized to decide invoices.")
+            raise HTTPException(
+                status_code=403, detail="Principal is not authorized to decide invoices."
+            )
         return actor
 
     @app.middleware("http")
@@ -67,7 +69,9 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             try:
                 request.state.api_decision_actor = api_decision_actor(request)
             except HTTPException as exception:
-                return JSONResponse(status_code=exception.status_code, content={"detail": exception.detail})
+                return JSONResponse(
+                    status_code=exception.status_code, content={"detail": exception.detail}
+                )
         protected_path = request.url.path == "/invoices" or request.url.path.startswith(
             "/invoices/"
         )
@@ -194,6 +198,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
                 "events": reversed(list_decision_events(db_path, invoice_id)),
                 "model_evaluations": list_model_evaluations(db_path, invoice_id),
                 "faults": faults.state,
+                "is_teaching_demo_invoice": invoice_id in {"INV-10029", "INV-10030"},
             },
         )
 

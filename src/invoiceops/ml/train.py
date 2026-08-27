@@ -85,9 +85,7 @@ def _track_run(
         "feature_schema_version": dataset_metadata["feature_schema_version"],
     }
     tags = {
-        "dataset_sha256": hashlib.sha256(
-            (dataset_dir / "metadata.json").read_bytes()
-        ).hexdigest(),
+        "dataset_sha256": hashlib.sha256((dataset_dir / "metadata.json").read_bytes()).hexdigest(),
         "git_commit": _git_commit(),
         "target": TARGET,
     }
