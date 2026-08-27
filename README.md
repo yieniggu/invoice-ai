@@ -1,199 +1,232 @@
 # InvoiceOps
 
-InvoiceOps is a local teaching MVP for invoice operations. It provides a FastAPI
-web portal, a JSON API, SQLite-backed seed data, a Playwright automation bot,
-and in-memory fault controls for controlled demo use.
+InvoiceOps es un laboratorio local para aprender operaciones de facturas y el ciclo de vida de un modelo de riesgo: datos, entrenamiento, tracking, Registry, Gate, serving, Policy y auditoría.
 
-## Requirements
+## Ruta rápida
 
-- Python 3.12 (`.python-version` and `pyproject.toml` require it)
-- [uv](https://docs.astral.sh/uv/)
-- Docker and Docker Compose only when using the Compose workflow
-- Chromium for the Playwright bot
-
-Clone the repository, then work from the project directory:
-
-```bash
-git clone https://github.com/yieniggu/invoice-ai.git
-cd invoice-ai
-```
-
-## Local setup and startup
-
-Install the project and development dependencies:
+Desde la raíz del proyecto:
 
 ```bash
 uv sync --all-groups
+uv run python -m ipykernel install --user --name invoiceops-py312 --display-name "InvoiceOps Python 3.12"
+INVOICEOPS_MODE=demo INVOICEOPS_DB_PATH=var/invoiceops.db uv run python scripts/reset_demo.py --confirm
 ```
 
-Install the browser required by the Playwright bot:
+Después, inicia MLflow, el portal y JupyterLab en terminales distintas siguiendo [Levantar el laboratorio desde cero](#levantar-el-laboratorio-desde-cero).
+
+> **Advertencia: reset destructivo local.** `scripts/reset_demo.py --confirm` borra permanentemente las facturas, decisiones y evaluaciones de modelo de la SQLite seleccionada. El borrado de `var/mlflow.db` y `var/mlflow-artifacts` elimina runs, versiones, aliases y artifacts locales. Úsalo solo con datos locales de este laboratorio, nunca contra datos reales, de producción o cloud.
+
+## Propósito y arquitectura
+
+El laboratorio separa las responsabilidades para que cada evidencia tenga un lugar claro:
+
+```text
+Facturas -> Rule v1 -> portal -> decisión explícita -> auditoría
+                   \
+Datos sintéticos -> entrenamiento -> MLflow Tracking -> Gate -> Registry
+                                                   -> champion -> Notebook 05
+                                                                  -> Policy -> auditoría
+```
+
+| Componente | Ruta o servicio | Responsabilidad |
+|---|---|---|
+| SQLite operacional | `var/invoiceops.db` | Base compartida por el portal y el Notebook 05. Guarda facturas, decisiones y `model_evaluations`. |
+| MLflow único | `var/mlflow.db` + `var/mlflow-artifacts/` | Backend local común para experimentos, runs, Model Versions, aliases y artifacts. |
+| Estado técnico de notebooks | `var/t23_5_demo/` | Solo estado auxiliar de Notebooks 04 y 05. No contiene una base de auditoría ni una copia de MLflow. |
+| Portal | `http://127.0.0.1:8000` | Aplica Rule v1, permite decisiones y muestra auditoría; no llama al Model API. |
+| Notebook 05 | puerto local libre | Demuestra Model API, Policy y persistencia de evaluaciones en la SQLite operacional. |
+
+La recomendación de la Policy no reemplaza la decisión final: el modelo calcula una probabilidad, la Policy la transforma en recomendación y la operación deja la decisión explícita y auditable.
+
+## Requisitos e instalación
+
+- Python 3.12; el proyecto requiere `>=3.12,<3.13`.
+- [uv](https://docs.astral.sh/uv/).
+- JupyterLab se instala con el grupo `teaching` incluido en `--all-groups`.
+- Chromium solo si se utilizará el bot Playwright: `uv run playwright install chromium`.
+
+Instala todas las dependencias y registra el kernel para los notebooks:
 
 ```bash
-uv run playwright install chromium
+uv sync --all-groups
+uv run python -m ipykernel install --user --name invoiceops-py312 --display-name "InvoiceOps Python 3.12"
 ```
 
-Start the local demo application:
+## Levantar el laboratorio desde cero
+
+Ejecuta estos pasos desde la raíz y conserva abiertas las terminales B, C y D. El paso de reset es intencionalmente separado: detén primero MLflow y los kernels que estén usando sus archivos.
+
+### Terminal A: reset local confirmado
 
 ```bash
-INVOICEOPS_MODE=demo uv run uvicorn invoiceops.legacy.app:app --host 127.0.0.1 --port 8000
+rm -rf var/mlflow.db var/mlflow-artifacts var/t23_5_demo
+INVOICEOPS_MODE=demo INVOICEOPS_DB_PATH=var/invoiceops.db uv run python scripts/reset_demo.py --confirm
 ```
 
-Open `http://127.0.0.1:8000/login`. The default demo credentials are
-`analyst` / `demo-password`.
+El segundo comando recrea y siembra la SQLite operacional. También elimina únicamente `var/t23_5_demo/state.json`; no crea otra base de auditoría.
 
-The default SQLite database is `var/invoiceops.db`. It is disposable local test
-data: application startup applies any pending migrations automatically. Set
-`INVOICEOPS_DB_PATH` to use a different database path.
-
-## Docker Compose
-
-Start the containerized demo:
+### Terminal B: MLflow compartido
 
 ```bash
-docker compose up --build
+uv run mlflow server \
+  --backend-store-uri sqlite:///var/mlflow.db \
+  --default-artifact-root ./var/mlflow-artifacts \
+  --host 127.0.0.1 \
+  --port 5000
 ```
 
-The application is available at `http://localhost:8000/login`. Compose mounts
-the `invoice-data` volume at `/app/var`, so its SQLite database persists across
-container restarts.
+Espera a que responda en `http://127.0.0.1:5000`. Este es el único servidor MLflow de la sesión.
 
-Stop the stack while preserving the volume:
+### Terminal C: portal
 
 ```bash
-docker compose down
+export INVOICEOPS_MODE=demo
+export INVOICEOPS_DB_PATH=var/invoiceops.db
+
+uv run uvicorn invoiceops.legacy.app:app --host 127.0.0.1 --port 8000
 ```
 
-> Warning: this command permanently removes the Compose `invoice-data` volume
-> and its SQLite database. Use it only when a complete containerized-demo reset
-> is intended.
+`INVOICEOPS_MODE` debe ser explícitamente `demo` o `secure`. Para este laboratorio usa `demo`; no documentes ni uses secretos reales en variables de entorno. El portal aplica las migraciones pendientes al iniciar.
+
+### Terminal D: JupyterLab
 
 ```bash
-docker compose down -v
+export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
+export INVOICEOPS_DB_PATH=var/invoiceops.db
+
+uv run jupyter lab
 ```
 
-## Reset demo data
+Abre la URL tokenizada que muestra JupyterLab, entra a `notebooks/` y selecciona el kernel **InvoiceOps Python 3.12**. Exporta las variables antes de abrir el kernel: debe compartir `MLFLOW_TRACKING_URI` con MLflow e `INVOICEOPS_DB_PATH` con el portal.
 
-Resetting drops the `invoices` and `decision_events` SQLite tables, then creates
-schema version 2 and inserts the eight seed invoices. It permanently discards local
-decisions and audit events in the selected database.
+Para usar otro directorio de estado técnico de los Notebooks 04 y 05, define `INVOICEOPS_NOTEBOOK_DEMO_ROOT` antes de iniciar JupyterLab. No cambia la ubicación de SQLite ni de MLflow.
+
+## Usar la aplicación
+
+Abre `http://127.0.0.1:8000/login` y autentícate con la configuración local que corresponda. Tras ingresar:
+
+- La lista de facturas está en `/invoices`.
+- El detalle `/invoices/{invoice_id}` muestra el contexto de riesgo, decisiones registradas y el historial de `model_evaluations`.
+- Después de ejecutar Notebook 05 con la misma `INVOICEOPS_DB_PATH`, consulta `INV-10029` e `INV-10030` para ver su auditoría de evaluaciones.
+- La verificación de servicio es `GET /api/health`.
+
+Una factura solo puede recibir una decisión mientras está en estado `PENDING`. Si se necesita repetir la demostración, ejecuta el reset antes de crear la nueva auditoría.
+
+## Notebooks en orden
+
+La guía de cada notebook, sus precondiciones y verificaciones está en [notebooks/README.md](notebooks/README.md). Ejecuta la secuencia completa:
+
+| Orden | Notebook | Propósito |
+|---:|---|---|
+| 01 | `01_data_and_baseline.ipynb` | Explorar el dataset y establecer un baseline. |
+| 02 | `02_models_and_metrics.ipynb` | Entrenar y comparar métricas de candidatos. |
+| 03 | `03_mlflow_and_model_selection.ipynb` | Registrar runs y evidencia de experimentos en MLflow. |
+| 04 | `04_registry_gate_and_promotion.ipynb` | Evaluar el Gate, registrar versiones y mover aliases. |
+| 05 | `05_serving_policy_and_audit.ipynb` | Cargar `champion`, servir probabilidades, aplicar Policy y auditar. |
+
+No continúes con 04 sin haber creado o reutilizado los runs de 03, ni con 05 sin completar 04.
+
+## MLflow: Tracking y Registry global
+
+Con `MLFLOW_TRACKING_URI=http://127.0.0.1:5000`, todos los comandos y notebooks usan el mismo backend:
+
+- Experimento: `invoice-risk`; en la UI, **Experiments -> invoice-risk**. Después de crear el experimento local, su ruta es `http://127.0.0.1:5000/#/experiments/1`.
+- Registry global: `http://127.0.0.1:5000/#/models`; en la UI, **Models -> invoice-review**.
+- Modelo registrado: `invoice-review`.
+- Aliases: `challenger` identifica una versión registrada para evaluación y `champion` la versión promovida.
+- URI usada por Notebook 05: `models:/invoice-review@champion`.
+
+Un run no es una Model Version. El Gate evalúa calidad, pero un resultado `PASS` no registra ni promueve automáticamente un modelo.
+
+## Flujo sin notebooks: CLI con uv
+
+Mantén MLflow de la Terminal B activo y configura la variable en la terminal donde ejecutarás el CLI:
 
 ```bash
-INVOICEOPS_MODE=demo uv run python scripts/reset_demo.py
+export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
 ```
 
-The seed invoice IDs are `INV-10023` through `INV-10030`. `INV-10028` starts in
-the `CANCELLED` state; the other seed invoices start as `PENDING`. Invoice detail
-and invoice API responses include risk context for future ML work: vendor tenure,
-previous incidents, bank-account change, amount versus vendor median, and country risk.
-`INV-10029` and `INV-10030` both meet Rule v1's `AUTO_PROCESS` inputs but show
-contrasting risk context for the class demo.
+### Datos, seed y migraciones
 
-## Web portal and bot
-
-The portal requires login for `/invoices` and `/admin/faults`. Use the demo
-credentials above in demo mode. A successful decision is recorded with the
-`ui` actor and a generated correlation ID.
-
-With the application running, process a pending invoice through the browser UI:
+Genera explícitamente el dataset canónico si quieres inspeccionarlo antes de entrenar:
 
 ```bash
-INVOICEOPS_MODE=demo uv run python -m invoiceops.automation.bot --invoice-id INV-10023
+uv run python scripts/generate_synthetic_dataset.py --seed 20260826 --rows 12000 --version invoice-risk-v1
 ```
 
-The bot defaults to `http://127.0.0.1:8000`, uses role-based locators, and runs
-headlessly. Use `--headed`, `--locator testid`, `--base-url`, or
-`--step-delay-seconds` when needed. A Playwright failure may write
-`artifacts/playwright_failure.png`.
-
-Run `scripts/reset_demo.py` before repeating a bot decision for an invoice: an
-invoice can only be decided while it is `PENDING`.
-
-## Chaos controls
-
-After login, open `http://127.0.0.1:8000/admin/faults`. The panel can change the
-Process button label, add 0/1000/3000/5000 ms detail-page latency, or make the
-decision API return `503`. `Reset All` clears all faults for the current process.
-
-The fault state is process-local memory. Run exactly one application worker and
-one replica while using fault controls. Restarting the process also clears every
-fault; multiple workers or replicas are unsupported for this feature.
-
-## API, health, and audit data
-
-Check the health endpoint:
+El entrenamiento también genera ese dataset si faltan sus particiones. Para recrear y sembrar las ocho facturas operacionales, usa el reset confirmado:
 
 ```bash
-curl http://127.0.0.1:8000/api/health
+INVOICEOPS_MODE=demo INVOICEOPS_DB_PATH=var/invoiceops.db uv run python scripts/reset_demo.py --confirm
 ```
 
-The JSON API exposes:
+Para aplicar migraciones a una ruta elegida sin sembrar datos:
 
-- `GET /api/invoices?q=<query>`: lists up to 100 invoices and returns `has_more`.
-- `GET /api/invoices/{invoice_id}`: returns one invoice or `404`.
-- `POST /api/v1/invoices/{invoice_id}/decision`: accepts a JSON body with
-  `{"decision":"AUTO_PROCESS"}` or `{"decision":"MANUAL_REVIEW"}`.
+```bash
+uv run python scripts/migrate_db.py --db-path var/invoiceops.db
+```
 
-Successful API decisions return and persist a correlation ID, and create a
-`decision_events` audit record with actor `api`. The invoice detail page displays
-its audit events for UI decisions.
+### Entrenamiento
 
-## Tests
+Ejecuta los tres candidatos; cada comando crea un run en `invoice-risk`:
 
-Run the test suite:
+```bash
+MLFLOW_TRACKING_URI=http://127.0.0.1:5000 uv run python -m invoiceops.ml.train --model dummy
+MLFLOW_TRACKING_URI=http://127.0.0.1:5000 uv run python -m invoiceops.ml.train --model logistic
+MLFLOW_TRACKING_URI=http://127.0.0.1:5000 uv run python -m invoiceops.ml.train --model random_forest
+```
+
+Identifica el `run_id` del candidato elegido en la UI de MLflow. No asumas que el run más reciente es el mejor.
+
+### Gate, registro y promotion
+
+Sustituye `RUN_ID` por el identificador del run elegido. El Gate exige `recall >= 0.18` y `precision >= 0.48`; solo continúa si termina en `PASS`:
+
+```bash
+MLFLOW_TRACKING_URI=http://127.0.0.1:5000 uv run python -m invoiceops.ml.gate --run-id RUN_ID
+MLFLOW_TRACKING_URI=http://127.0.0.1:5000 uv run python -m invoiceops.ml.registry register --run-id RUN_ID
+```
+
+El registro imprime la versión creada. Sustituye `VERSION` por ese valor para promoverla de forma explícita a `champion`:
+
+```bash
+MLFLOW_TRACKING_URI=http://127.0.0.1:5000 uv run python -m invoiceops.ml.registry promote --version VERSION
+```
+
+La promoción mueve un alias del Registry; no recarga un Model API que ya esté en memoria. Para la demostración de serving y auditoría, continúa en Notebook 05 y verifica su `/health` tras iniciar el proceso que el notebook administra.
+
+## Pruebas y lint
+
+El proyecto incluye pruebas unitarias e integración en `tests/`. Las herramientas definidas en el proyecto son pytest y Ruff:
 
 ```bash
 uv run pytest
+uv run ruff check .
 ```
 
-## Demo and secure modes
+Estos comandos no se ejecutaron al actualizar esta guía.
 
-`INVOICEOPS_MODE` must be explicitly set to either `demo` or `secure`.
+## Mapa de scripts y documentación
 
-- `demo` defaults to the public local credentials shown above and the
-  development session secret `dev-only-change-me`. It is for local demo use only.
-- `secure` requires non-empty `INVOICEOPS_DEMO_USERNAME`,
-  `INVOICEOPS_DEMO_PASSWORD`, `INVOICEOPS_SESSION_SECRET`, and
-  `INVOICEOPS_ALLOWED_DECISION_PRINCIPALS`. The latter is a comma-separated
-  allow-list of signed-session principals permitted to `POST`
-  `/api/v1/invoices/{invoice_id}/decision`. It rejects the demo session secret
-  and uses `Secure`, `HttpOnly`, and `SameSite=Lax` session cookie attributes.
-  Terminate TLS at or before the application.
+| Recurso | Uso |
+|---|---|
+| [`scripts/reset_demo.py`](scripts/reset_demo.py) | Reset destructivo confirmado, seed de facturas y limpieza del estado técnico de notebook. |
+| [`scripts/migrate_db.py`](scripts/migrate_db.py) | Aplicar migraciones SQLite a una ruta indicada. |
+| [`scripts/generate_synthetic_dataset.py`](scripts/generate_synthetic_dataset.py) | Crear un dataset sintético, determinista y particionado. |
+| [`notebooks/README.md`](notebooks/README.md) | Ruta de notebooks, variables y comprobaciones por etapa. |
+| [`docs/class-02-mlops-runbook.md`](docs/class-02-mlops-runbook.md) | Runbook docente detallado de MLOps, Gate, Registry, Policy y recuperación. |
+| [`docs/manual-ejecucion-macos.md`](docs/manual-ejecucion-macos.md) | Instrucciones específicas para macOS. |
+| [`docs/manual-ejecucion-windows.md`](docs/manual-ejecucion-windows.md) | Instrucciones específicas para Windows. |
 
-In secure mode, an anonymous request to the decision endpoint returns `401`; a
-signed session whose principal is not on the allow-list returns `403`; an
-authorized principal follows the existing decision behavior. Secure-mode audit
-records use that principal as the actor rather than `api`. In demo mode, the
-decision endpoint remains available without a session and its audit actor is
-`api`.
+## Troubleshooting básico
 
-Missing, empty, or invalid secure configuration, including an empty allow-list
-entry, fails closed during application startup.
+| Situación | Comprobación o acción |
+|---|---|
+| MLflow no muestra runs | Confirma que MLflow está en `:5000` y que la terminal o kernel exportó `MLFLOW_TRACKING_URI=http://127.0.0.1:5000` antes de ejecutar. No inicies un segundo servidor. |
+| El portal no muestra auditoría de Notebook 05 | Portal y kernel deben usar exactamente el mismo `INVOICEOPS_DB_PATH`; consulta el detalle de `INV-10029` o `INV-10030`. |
+| Notebook 04 o 05 no encuentra lo esperado | Vuelve al notebook anterior y respeta el orden 03 -> 04 -> 05. |
+| El Gate falla | No registres ni promociones ese run; revisa `recall` y `precision` en MLflow y elige o entrena otro candidato. |
+| El puerto está ocupado | Detén el proceso local conocido o usa un puerto disponible y actualiza la URL que uses. Notebook 05 reserva un puerto libre para su Model API. |
+| La evaluación no se repite | El reset borra la auditoría local; ejecútalo antes de reiniciar la demostración, no después. |
 
-### Secure preflight and rollback
-
-Before starting in secure mode, verify that the intended signed-session
-principal is present in `INVOICEOPS_ALLOWED_DECISION_PRINCIPALS` and that all
-required secure-mode variables are set to valid, non-demo values. If access
-must be rolled back, correct the secure allow-list or other invalid secure
-configuration and restart in secure mode; do not use demo mode as a secure-mode
-fallback.
-
-The Compose credentials and session secret are demo-only values, not production
-secret management.
-
-## Repository map
-
-- `src/invoiceops/domain/`: invoice models and decision rules.
-- `src/invoiceops/legacy/`: FastAPI application, authentication, SQLite access,
-  seed data, templates, static assets, and fault controls.
-- `src/invoiceops/automation/bot.py`: Playwright UI automation bot.
-- `scripts/reset_demo.py`: destructive SQLite reset and seed command.
-- `tests/`: unit and integration tests.
-- `compose.yml` and `Dockerfile`: containerized demo runtime.
-
-## Documentation scope
-
-This README contains public product-operation information only. Instructor-facing
-class scripts, pre-class instructions, demo sequences, and fallback procedures
-are **DEFERRED_APPROVED/local-only** and are intentionally not tracked in this
-repository.
+Para el recorrido docente completo y los procedimientos de recuperación, consulta el [runbook de Clase 2](docs/class-02-mlops-runbook.md).
