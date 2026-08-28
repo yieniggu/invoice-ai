@@ -32,7 +32,7 @@ Datos sintéticos -> entrenamiento -> MLflow Tracking -> Gate -> Registry
 |---|---|---|
 | SQLite operacional | `var/invoiceops.db` | Base compartida por el portal y el Notebook 05. Guarda facturas, decisiones y `model_evaluations`. |
 | MLflow único | `var/mlflow.db` + `var/mlflow-artifacts/` | Backend local común para experimentos, runs, Model Versions, aliases y artifacts. |
-| Estado técnico de notebooks | `var/t23_5_demo/` | Solo estado auxiliar de Notebooks 04 y 05. No contiene una base de auditoría ni una copia de MLflow. |
+| Estado técnico histórico de notebooks | `var/t23_5_demo/` | Solo estado auxiliar de Notebooks 04 y 05. No contiene una base de auditoría ni una copia de MLflow y no es canónico para Clase 3. |
 | Portal | `http://127.0.0.1:8000` | Aplica Rule v1, permite decisiones y muestra auditoría; no llama al Model API. |
 | Notebook 05 | puerto local libre | Demuestra Model API, Policy y persistencia de evaluaciones en la SQLite operacional. |
 
@@ -123,8 +123,21 @@ La guía de cada notebook, sus precondiciones y verificaciones está en [noteboo
 | 03 | `03_mlflow_and_model_selection.ipynb` | Registrar runs y evidencia de experimentos en MLflow. |
 | 04 | `04_registry_gate_and_promotion.ipynb` | Evaluar el Gate, registrar versiones y mover aliases. |
 | 05 | `05_serving_policy_and_audit.ipynb` | Cargar `champion`, servir probabilidades, aplicar Policy y auditar. |
+| 06 | `06_class_03_continuity_and_demo_state.ipynb` | Inspeccionar read-only la continuidad de Clase 2 antes de Evidence/Merkle/Blockchain. |
 
 No continúes con 04 sin haber creado o reutilizado los runs de 03, ni con 05 sin completar 04.
+
+## Continuidad de Clase 3
+
+Clase 3 reutiliza la SQLite operacional y el backend MLflow de Clase 2; no adopta `var/t23_5_demo/` como estado de auditoría. Antes de avanzar a Evidence/Merkle/Blockchain, inspecciona el estado real:
+
+```bash
+INVOICEOPS_DB_PATH=var/invoiceops.db \
+MLFLOW_TRACKING_URI=http://127.0.0.1:5000 \
+uv run python -m invoiceops.demo_state
+```
+
+El inspector es read-only: comunica la ruta activa, conteos e IDs dinámicos de `model_evaluations`, run IDs, Registry/`champion` y disponibilidad EVM. No crea directorios o bases, no ejecuta seed/migrate ni registra o promueve modelos. Consulta el [runbook de continuidad de Clase 3](docs/class-03-continuity-runbook.md) para preparar o interpretar el estado vacío.
 
 ## MLflow: Tracking y Registry global
 
@@ -215,6 +228,7 @@ Estos comandos no se ejecutaron al actualizar esta guía.
 | [`scripts/generate_synthetic_dataset.py`](scripts/generate_synthetic_dataset.py) | Crear un dataset sintético, determinista y particionado. |
 | [`notebooks/README.md`](notebooks/README.md) | Ruta de notebooks, variables y comprobaciones por etapa. |
 | [`docs/class-02-mlops-runbook.md`](docs/class-02-mlops-runbook.md) | Runbook docente detallado de MLOps, Gate, Registry, Policy y recuperación. |
+| [`docs/class-03-continuity-runbook.md`](docs/class-03-continuity-runbook.md) | Estado canónico y preflight read-only para continuar desde Clase 2. |
 | [`docs/manual-ejecucion-macos.md`](docs/manual-ejecucion-macos.md) | Instrucciones específicas para macOS. |
 | [`docs/manual-ejecucion-windows.md`](docs/manual-ejecucion-windows.md) | Instrucciones específicas para Windows. |
 

@@ -56,6 +56,7 @@ Abre la URL que muestra JupyterLab y selecciona el kernel **InvoiceOps Python
 | `03_mlflow_and_model_selection.ipynb` | Registras runs en MLflow. | Un run conserva métricas, parámetros y artifacts de un experimento. |
 | `04_registry_gate_and_promotion.ipynb` | Aplicas el Gate y registras versiones. | Un run no es una Model Version; `champion` es un alias que puede moverse. |
 | `05_serving_policy_and_audit.ipynb` | Cargas `champion`, predices y auditas. | Modelo, Policy y auditoría son responsabilidades diferentes. |
+| `06_class_03_continuity_and_demo_state.ipynb` | Inspeccionas el estado acumulado de Clase 2. | Clase 3 usa la SQLite y MLflow canónicos; IDs y champion son dinámicos. |
 
 ## Qué comprobar al avanzar
 
@@ -89,3 +90,15 @@ Abre la URL que muestra JupyterLab y selecciona el kernel **InvoiceOps Python
 
 > No ejecutes el reset durante una actividad en curso: borra las facturas,
 > decisiones y auditorías locales del laboratorio.
+
+## Continuidad hacia Clase 3
+
+Ejecuta el Notebook 06 antes de los tickets de Evidence/Merkle/Blockchain. Importa el inspector real `invoiceops.demo_state` y no modifica el laboratorio. Puedes comprobar el mismo resultado fuera de Jupyter:
+
+```bash
+INVOICEOPS_DB_PATH=var/invoiceops.db \
+MLFLOW_TRACKING_URI=http://127.0.0.1:5000 \
+uv run python -m invoiceops.demo_state
+```
+
+Si no hay evaluaciones, runs o `champion`, vuelve al flujo explícito de Clase 2. `var/t23_5_demo/` es solo estado técnico histórico de notebooks y no debe usarse como fuente canónica. Consulta el [runbook de continuidad de Clase 3](../docs/class-03-continuity-runbook.md) para el procedimiento completo.
