@@ -7,6 +7,7 @@ from invoiceops.domain.policy import fallback_recommendation, recommend_from_pro
 from invoiceops.legacy.db import (
     InvalidInvoiceTransition,
     _connect,
+    _resolve_db_path,
     get_invoice,
     insert_model_evaluation,
     list_decision_events,
@@ -139,6 +140,27 @@ def test_database_path_can_be_overridden_by_environment(
 
     assert db_path.exists()
     assert len(list_invoices().invoices) == 8
+
+
+def test_relative_environment_database_path_is_resolved_from_project_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = Path(__file__).parents[2]
+    monkeypatch.chdir(project_root / "notebooks")
+    monkeypatch.setenv("INVOICEOPS_DB_PATH", "var/invoiceops.db")
+
+    assert _resolve_db_path(None) == project_root / "var" / "invoiceops.db"
+
+
+def test_absolute_environment_database_path_is_preserved_from_notebooks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project_root = Path(__file__).parents[2]
+    db_path = (tmp_path / "override.db").resolve()
+    monkeypatch.chdir(project_root / "notebooks")
+    monkeypatch.setenv("INVOICEOPS_DB_PATH", str(db_path))
+
+    assert _resolve_db_path(None) == db_path
 
 
 def test_seed_is_idempotent_and_preserves_existing_decisions_and_audits(db_path: Path) -> None:

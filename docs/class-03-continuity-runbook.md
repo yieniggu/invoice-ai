@@ -55,7 +55,18 @@ En otra terminal, exporta `MLFLOW_TRACKING_URI=http://127.0.0.1:5000`, completa 
 
 ## Notebook docente
 
-Abre `notebooks/06_class_03_continuity_and_demo_state.ipynb` después de configurar el kernel. El notebook llama exclusivamente a `inspect_demo_state()` y no duplica SQL ni consultas MLflow. Su primera celda confirma qué evidencia real está disponible antes de avanzar a los tickets C3-T01 y posteriores.
+Abre `notebooks/06_class_03_continuity_and_demo_state.ipynb` después de configurar el kernel. Su primera celda llama a `inspect_demo_state()` para confirmar el estado sin mutarlo. Las celdas de C3-T01 usan las APIs públicas de `invoiceops.evidence`: listan evaluaciones utilizables, construyen `invoice-evidence-v1` desde la evaluación canónica y su run MLflow, y persisten una sola evidencia por evaluación. No duplican SQL ni inventan lineage.
+
+La interfaz técnica equivalente es:
+
+```bash
+uv run python -m invoiceops.evidence list --db "$INVOICEOPS_DB_PATH"
+uv run python -m invoiceops.evidence build --db "$INVOICEOPS_DB_PATH" --evaluation-id 1
+uv run python -m invoiceops.evidence persist --db "$INVOICEOPS_DB_PATH" --evaluation-id 1
+uv run python -m invoiceops.evidence get --db "$INVOICEOPS_DB_PATH" --evaluation-id 1
+```
+
+Sustituye `1` por un ID realmente listado. Si falta `run_id` o alguno de los tres campos de provenance, `list` lo marca no utilizable con una causa explícita y `build`/`persist` fallan sin escribir evidencia parcial.
 
 ## Dependencias de runtime
 

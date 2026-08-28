@@ -10,6 +10,7 @@ from invoiceops.domain.policy import Recommendation
 from invoiceops.domain.rules import RULE_VERSION
 
 DEFAULT_DB_PATH = Path("var/invoiceops.db")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 INVOICE_LIST_LIMIT = 100
 MIGRATION_FILENAME = re.compile(r"(?P<version>\d{3})_(?P<name>[a-z0-9]+(?:_[a-z0-9]+)*)\.sql$")
 INITIAL_TABLE_COLUMNS = {
@@ -48,7 +49,8 @@ class InvalidInvoiceTransition(Exception):
 def _resolve_db_path(db_path: str | Path | None) -> Path:
     if db_path is not None:
         return Path(db_path)
-    return Path(os.environ.get("INVOICEOPS_DB_PATH", DEFAULT_DB_PATH))
+    path = Path(os.environ.get("INVOICEOPS_DB_PATH", DEFAULT_DB_PATH))
+    return path if path.is_absolute() else PROJECT_ROOT / path
 
 
 def _connect(db_path: str | Path | None) -> sqlite3.Connection:
@@ -348,8 +350,62 @@ def list_model_evaluations(db_path: str | Path | None, invoice_id: str) -> list[
         ).fetchall()
 
 
+def get_model_evaluation(db_path: str | Path | None, evaluation_id: int) -> sqlite3.Row | None:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            "SELECT * FROM model_evaluations WHERE id = ?", (evaluation_id,)
+        ).fetchone()
+
+
+def list_model_evaluation_records(db_path: str | Path | None) -> list[sqlite3.Row]:
+    with _connect(db_path) as connection:
+        return connection.execute("SELECT * FROM model_evaluations ORDER BY id").fetchall()
+
+
+def insert_evidence_records(
+    db_path: str | Path | None,
+    records: list[tuple[int, str, str, str]],
+) -> None:
+    with _connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.executemany(
+            """
+            INSERT INTO evidence_records (
+                evaluation_id, contract_version, evidence_json, created_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            records,
+        )
+
+
+def get_evidence_record(
+    db_path: str | Path | None, evaluation_id: int, contract_version: str
+) -> sqlite3.Row | None:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            """
+            SELECT * FROM evidence_records
+            WHERE evaluation_id = ? AND contract_version = ?
+            """,
+            (evaluation_id, contract_version),
+        ).fetchone()
+
+
+def list_evidence_records(db_path: str | Path | None, contract_version: str) -> list[sqlite3.Row]:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            """
+            SELECT * FROM evidence_records
+            WHERE contract_version = ?
+            ORDER BY evaluation_id
+            """,
+            (contract_version,),
+        ).fetchall()
+
+
 def reset_db(db_path: str | Path | None = None) -> None:
     with _connect(db_path) as connection:
+        connection.execute("DROP TABLE IF EXISTS evidence_records")
         connection.execute("DROP TABLE IF EXISTS model_evaluations")
         connection.execute("DROP TABLE IF EXISTS decision_events")
         connection.execute("DROP TABLE IF EXISTS invoices")
