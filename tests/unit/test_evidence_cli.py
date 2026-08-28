@@ -72,3 +72,65 @@ def test_evidence_cli_builds_the_same_contract_as_the_python_api(
     evidence.main()
 
     assert json.loads(capsys.readouterr().out) == [expected]
+
+
+def test_evidence_cli_hashes_and_verifies_persisted_evidence(tmp_path, monkeypatch, capsys) -> None:
+    from invoiceops import evidence
+
+    db_path = tmp_path / "invoiceops.db"
+    seed_invoices(db_path)
+    insert_model_evaluation(
+        db_path,
+        "INV-10023",
+        correlation_id="corr-cli-hash",
+        model_name="invoice-review",
+        model_version="7",
+        run_id="run-123",
+        manual_review_probability=0.2,
+        recommendation=recommend_from_probability(0.2),
+    )
+    monkeypatch.setattr(
+        evidence, "MlflowClient", lambda: SimpleNamespace(get_run=lambda run_id: _run())
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["evidence", "persist", "--db", str(db_path), "--evaluation-id", "1"],
+    )
+    evidence.main()
+    capsys.readouterr()
+
+    monkeypatch.setattr(
+        sys, "argv", ["evidence", "hash", "--db", str(db_path), "--evaluation-id", "1"]
+    )
+    evidence.main()
+    hashed = json.loads(capsys.readouterr().out)
+
+    monkeypatch.setattr(
+        sys, "argv", ["evidence", "verify", "--db", str(db_path), "--evaluation-id", "1"]
+    )
+    evidence.main()
+
+    assert hashed["algorithm"] == "keccak-256"
+    assert hashed["digest"] == evidence.evidence_digest(evidence.get_evidence_record(db_path, 1))
+    assert json.loads(capsys.readouterr().out) == {"evaluation_id": 1, "verified": True}
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evidence",
+            "compare",
+            "--db",
+            str(db_path),
+            "--evaluation-id",
+            "1",
+            "--field",
+            "reason",
+            "--value",
+            "altered",
+        ],
+    )
+    evidence.main()
+
+    assert json.loads(capsys.readouterr().out) == {"evaluation_id": 1, "tampered": True}

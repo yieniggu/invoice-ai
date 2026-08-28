@@ -55,7 +55,7 @@ En otra terminal, exporta `MLFLOW_TRACKING_URI=http://127.0.0.1:5000`, completa 
 
 ## Notebook docente
 
-Abre `notebooks/06_class_03_continuity_and_demo_state.ipynb` después de configurar el kernel. Su primera celda llama a `inspect_demo_state()` para confirmar el estado sin mutarlo. Las celdas de C3-T01 usan las APIs públicas de `invoiceops.evidence`: listan evaluaciones utilizables, construyen `invoice-evidence-v1` desde la evaluación canónica y su run MLflow, y persisten una sola evidencia por evaluación. No duplican SQL ni inventan lineage.
+Abre `notebooks/06_class_03_continuity_and_demo_state.ipynb` después de configurar el kernel. Su primera celda llama a `inspect_demo_state()` para confirmar el estado sin mutarlo. Las celdas de C3-T01/C3-T02 usan las APIs públicas de `invoiceops.evidence`: listan evaluaciones utilizables, construyen `invoice-evidence-v1` desde la evaluación canónica y su run MLflow, y persisten una sola evidencia por evaluación. C3-T02 serializa el contenido lógico como JSON UTF-8 canónico versionado y calcula Keccak-256 compatible con Ethereum, no SHA3-256 NIST. El digest hexadecimal es en minúsculas y no incluye el prefijo `0x`. No duplican SQL, canonicalización, criptografía ni inventan lineage.
 
 La interfaz técnica equivalente es:
 
@@ -64,9 +64,12 @@ uv run python -m invoiceops.evidence list --db "$INVOICEOPS_DB_PATH"
 uv run python -m invoiceops.evidence build --db "$INVOICEOPS_DB_PATH" --evaluation-id 1
 uv run python -m invoiceops.evidence persist --db "$INVOICEOPS_DB_PATH" --evaluation-id 1
 uv run python -m invoiceops.evidence get --db "$INVOICEOPS_DB_PATH" --evaluation-id 1
+uv run python -m invoiceops.evidence hash --db "$INVOICEOPS_DB_PATH" --evaluation-id 1
+uv run python -m invoiceops.evidence verify --db "$INVOICEOPS_DB_PATH" --evaluation-id 1
+uv run python -m invoiceops.evidence compare --db "$INVOICEOPS_DB_PATH" --evaluation-id 1 --field reason --value altered
 ```
 
-Sustituye `1` por un ID realmente listado. Si falta `run_id` o alguno de los tres campos de provenance, `list` lo marca no utilizable con una causa explícita y `build`/`persist` fallan sin escribir evidencia parcial.
+`hash` devuelve el algoritmo, versión canónica y digest del registro persistido. `verify` reproduce el payload canónico desde `evidence_json` y compara payload y digest persistidos. `compare` modifica solo una copia en memoria y devuelve `tampered: true`; no escribe SQLite. Sustituye `1` por un ID realmente listado. Si falta `run_id` o alguno de los tres campos de provenance, `list` lo marca no utilizable con una causa explícita y `build`/`persist` fallan sin escribir evidencia parcial.
 
 ## Dependencias de runtime
 

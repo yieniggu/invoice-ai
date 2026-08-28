@@ -19,6 +19,7 @@ dependencies = [
     "pandas",
     "scikit-learn",
     "mlflow",
+    "eth-hash[pycryptodome]>=0.8.0",
 ]
 
 [dependency-groups]

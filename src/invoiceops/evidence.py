@@ -4,13 +4,14 @@ import argparse
 import json
 import os
 import sqlite3
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields, replace
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 import mlflow
+from eth_hash.auto import keccak
 from mlflow.exceptions import MlflowException, RestException
 from mlflow.tracking import MlflowClient
 
@@ -23,6 +24,8 @@ from invoiceops.legacy.db import (
 from invoiceops.legacy.db import list_evidence_records as _list_evidence_rows
 
 EVIDENCE_CONTRACT_VERSION = "invoice-evidence-v1"
+CANONICAL_SERIALIZATION_VERSION = "invoice-evidence-canonical-v1"
+KECCAK256_ALGORITHM = "keccak-256"
 
 
 class EvidenceError(ValueError):
@@ -31,6 +34,20 @@ class EvidenceError(ValueError):
 
 class EvidencePersistenceError(EvidenceError):
     """Raised when evidence records cannot be atomically persisted or decoded."""
+
+
+def _canonical_value(value: object) -> object:
+    if value is None or isinstance(value, (bool, str, int)):
+        return value
+    if isinstance(value, float):
+        raise EvidenceError("canonical serialization does not allow floats")
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise EvidenceError("canonical serialization requires string keys")
+        return {key: _canonical_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_canonical_value(item) for item in value]
+    raise EvidenceError(f"canonical serialization does not allow {type(value).__name__}")
 
 
 @dataclass(frozen=True)
@@ -67,6 +84,32 @@ class EvidenceRecord:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def canonicalize_evidence_record(record: EvidenceRecord | dict[str, object]) -> bytes:
+    """Return the versioned UTF-8 JSON payload used by the evidence digest."""
+    evidence = record.to_dict() if isinstance(record, EvidenceRecord) else record
+    payload = {
+        "canonical_version": CANONICAL_SERIALIZATION_VERSION,
+        "evidence": _canonical_value(evidence),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+
+
+def keccak256_hex(payload: bytes) -> str:
+    """Return a lowercase Ethereum Keccak-256 hexadecimal digest without a 0x prefix."""
+    return keccak(payload).hex()
+
+
+def evidence_digest(record: EvidenceRecord | dict[str, object]) -> str:
+    return keccak256_hex(canonicalize_evidence_record(record))
+
+
+def compare_evidence_records(expected: EvidenceRecord, candidate: EvidenceRecord) -> bool:
+    """Return whether an in-memory candidate differs from the expected evidence digest."""
+    return evidence_digest(expected) != evidence_digest(candidate)
 
 
 def normalize_decimal(value: object) -> str:
@@ -202,6 +245,10 @@ def persist_evidence_records(db_path: str | Path | None, records: list[EvidenceR
             record.contract_version,
             json.dumps(record.to_dict(), sort_keys=True, separators=(",", ":")),
             created_at,
+            CANONICAL_SERIALIZATION_VERSION,
+            canonicalize_evidence_record(record).decode("utf-8"),
+            KECCAK256_ALGORITHM,
+            evidence_digest(record),
         )
         for record in records
     ]
@@ -233,6 +280,21 @@ def list_evidence_records(db_path: str | Path | None) -> list[EvidenceRecord]:
     ]
 
 
+def verify_persisted_evidence_record(db_path: str | Path | None, evaluation_id: int) -> bool:
+    row = _get_evidence_row(db_path, evaluation_id, EVIDENCE_CONTRACT_VERSION)
+    if row is None:
+        raise EvidenceError(f"evidence record not found: {evaluation_id}")
+    if row["canonical_version"] != CANONICAL_SERIALIZATION_VERSION:
+        raise EvidencePersistenceError("stored canonical version is unsupported")
+    if row["digest_algorithm"] != KECCAK256_ALGORITHM:
+        raise EvidencePersistenceError("stored digest algorithm is unsupported")
+    record = _record_from_row(row)
+    canonical_payload = canonicalize_evidence_record(record).decode("utf-8")
+    return row["canonical_payload"] == canonical_payload and row["digest_hex"] == evidence_digest(
+        record
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build and persist InvoiceOps evidence records.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -245,6 +307,19 @@ def main() -> None:
     get_parser = subparsers.add_parser("get")
     get_parser.add_argument("--db", required=True, type=Path)
     get_parser.add_argument("--evaluation-id", required=True, type=int)
+    for command in ("hash", "verify"):
+        command_parser = subparsers.add_parser(command)
+        command_parser.add_argument("--db", required=True, type=Path)
+        command_parser.add_argument("--evaluation-id", required=True, type=int)
+    compare_parser = subparsers.add_parser("compare")
+    compare_parser.add_argument("--db", required=True, type=Path)
+    compare_parser.add_argument("--evaluation-id", required=True, type=int)
+    compare_parser.add_argument(
+        "--field",
+        required=True,
+        choices=[field.name for field in fields(EvidenceRecord) if field.name != "provenance"],
+    )
+    compare_parser.add_argument("--value", required=True)
     args = parser.parse_args()
 
     try:
@@ -259,6 +334,31 @@ def main() -> None:
             if record is None:
                 raise EvidenceError(f"evidence record not found: {args.evaluation_id}")
             result = record.to_dict()
+        elif args.command == "hash":
+            record = get_evidence_record(args.db, args.evaluation_id)
+            if record is None:
+                raise EvidenceError(f"evidence record not found: {args.evaluation_id}")
+            result = {
+                "algorithm": KECCAK256_ALGORITHM,
+                "canonical_version": CANONICAL_SERIALIZATION_VERSION,
+                "digest": evidence_digest(record),
+                "evaluation_id": record.evaluation_id,
+            }
+        elif args.command == "verify":
+            result = {
+                "evaluation_id": args.evaluation_id,
+                "verified": verify_persisted_evidence_record(args.db, args.evaluation_id),
+            }
+        elif args.command == "compare":
+            record = get_evidence_record(args.db, args.evaluation_id)
+            if record is None:
+                raise EvidenceError(f"evidence record not found: {args.evaluation_id}")
+            result = {
+                "evaluation_id": record.evaluation_id,
+                "tampered": compare_evidence_records(
+                    record, replace(record, **{args.field: args.value})
+                ),
+            }
         else:
             records = build_evidence_records(args.db, args.evaluation_id)
             if args.command == "persist":

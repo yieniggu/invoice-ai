@@ -364,15 +364,16 @@ def list_model_evaluation_records(db_path: str | Path | None) -> list[sqlite3.Ro
 
 def insert_evidence_records(
     db_path: str | Path | None,
-    records: list[tuple[int, str, str, str]],
+    records: list[tuple[int, str, str, str, str, str, str, str]],
 ) -> None:
     with _connect(db_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         connection.executemany(
             """
             INSERT INTO evidence_records (
-                evaluation_id, contract_version, evidence_json, created_at
-            ) VALUES (?, ?, ?, ?)
+                evaluation_id, contract_version, evidence_json, created_at,
+                canonical_version, canonical_payload, digest_algorithm, digest_hex
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             records,
         )
