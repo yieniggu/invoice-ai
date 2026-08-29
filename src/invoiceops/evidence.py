@@ -15,15 +15,16 @@ from eth_hash.auto import keccak
 from mlflow.exceptions import MlflowException, RestException
 from mlflow.tracking import MlflowClient
 
-from invoiceops.legacy.db import get_evidence_batch as _get_evidence_batch_row
-from invoiceops.legacy.db import get_evidence_hash as _get_evidence_hash_row
-from invoiceops.legacy.db import get_evidence_record as _get_evidence_row
 from invoiceops.legacy.db import (
+    _connect,
     get_model_evaluation,
     insert_evidence_batch,
     insert_evidence_records,
     list_model_evaluation_records,
 )
+from invoiceops.legacy.db import get_evidence_batch as _get_evidence_batch_row
+from invoiceops.legacy.db import get_evidence_hash as _get_evidence_hash_row
+from invoiceops.legacy.db import get_evidence_record as _get_evidence_row
 from invoiceops.legacy.db import list_evidence_batch_items as _list_evidence_batch_item_rows
 from invoiceops.legacy.db import list_evidence_records as _list_evidence_rows
 
@@ -39,6 +40,12 @@ class EvidenceError(ValueError):
 
 class EvidencePersistenceError(EvidenceError):
     """Raised when evidence records cannot be atomically persisted or decoded."""
+
+
+@dataclass(frozen=True)
+class EvidenceBackfillResult:
+    evaluation_ids: list[int]
+    dry_run: bool
 
 
 @dataclass(frozen=True)
@@ -401,6 +408,85 @@ def verify_persisted_evidence_record(db_path: str | Path | None, evaluation_id: 
     )
 
 
+def backfill_canonical_evidence_records(
+    db_path: str | Path | None, *, dry_run: bool = False
+) -> EvidenceBackfillResult:
+    """Backfill canonical metadata for complete legacy v1 evidence records only."""
+    plans: list[tuple[int, int, str, str, str, str]] = []
+    with _connect(db_path) as connection:
+        if not dry_run:
+            connection.execute("BEGIN IMMEDIATE")
+        rows = connection.execute(
+            """
+            SELECT id, evaluation_id, contract_version, evidence_json, created_at,
+                   canonical_version, canonical_payload, digest_algorithm, digest_hex
+            FROM evidence_records
+            WHERE contract_version = ?
+            ORDER BY evaluation_id
+            """,
+            (EVIDENCE_CONTRACT_VERSION,),
+        ).fetchall()
+        for row in rows:
+            stored_metadata = (
+                row["canonical_version"],
+                row["canonical_payload"],
+                row["digest_algorithm"],
+                row["digest_hex"],
+            )
+            record = _record_from_row(row)
+            if record.contract_version != EVIDENCE_CONTRACT_VERSION:
+                raise EvidencePersistenceError("stored evidence contract version is unsupported")
+            derived_metadata = (
+                CANONICAL_SERIALIZATION_VERSION,
+                canonicalize_evidence_record(record).decode("utf-8"),
+                KECCAK256_ALGORITHM,
+                evidence_digest(record),
+            )
+            if all(value is None for value in stored_metadata):
+                plans.append((row["id"], row["evaluation_id"], *derived_metadata))
+            elif any(value is None for value in stored_metadata):
+                raise EvidencePersistenceError("stored canonical metadata is incomplete")
+            elif stored_metadata[0] != CANONICAL_SERIALIZATION_VERSION:
+                raise EvidencePersistenceError("stored canonical version is unsupported")
+            elif stored_metadata[2] != KECCAK256_ALGORITHM:
+                raise EvidencePersistenceError("stored digest algorithm is unsupported")
+            elif stored_metadata != derived_metadata:
+                raise EvidencePersistenceError("stored canonical metadata does not verify")
+
+        if not dry_run:
+            for record_id, _, canonical_version, canonical_payload, digest_algorithm, digest_hex in plans:
+                cursor = connection.execute(
+                    """
+                    UPDATE evidence_records
+                    SET canonical_version = ?, canonical_payload = ?,
+                        digest_algorithm = ?, digest_hex = ?
+                    WHERE id = ?
+                      AND canonical_version IS NULL
+                      AND canonical_payload IS NULL
+                      AND digest_algorithm IS NULL
+                      AND digest_hex IS NULL
+                    """,
+                    (
+                        canonical_version,
+                        canonical_payload,
+                        digest_algorithm,
+                        digest_hex,
+                        record_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise EvidencePersistenceError("evidence record changed during backfill")
+
+    result = EvidenceBackfillResult(
+        evaluation_ids=[evaluation_id for _, evaluation_id, *_ in plans], dry_run=dry_run
+    )
+    if not dry_run:
+        for evaluation_id in result.evaluation_ids:
+            if not verify_persisted_evidence_record(db_path, evaluation_id):
+                raise EvidencePersistenceError("backfilled evidence record does not verify")
+    return result
+
+
 def create_evidence_batch(
     db_path: str | Path | None, evaluation_ids: list[int]
 ) -> EvidenceBatch:
@@ -524,6 +610,9 @@ def main() -> None:
         command_parser = subparsers.add_parser(command)
         command_parser.add_argument("--db", required=True, type=Path)
         command_parser.add_argument("--evaluation-id", required=True, type=int)
+    backfill_parser = subparsers.add_parser("backfill")
+    backfill_parser.add_argument("--db", required=True, type=Path)
+    backfill_parser.add_argument("--dry-run", action="store_true")
     compare_parser = subparsers.add_parser("compare")
     compare_parser.add_argument("--db", required=True, type=Path)
     compare_parser.add_argument("--evaluation-id", required=True, type=int)
@@ -562,6 +651,8 @@ def main() -> None:
                 "evaluation_id": args.evaluation_id,
                 "verified": verify_persisted_evidence_record(args.db, args.evaluation_id),
             }
+        elif args.command == "backfill":
+            result = asdict(backfill_canonical_evidence_records(args.db, dry_run=args.dry_run))
         elif args.command == "compare":
             record = get_evidence_record(args.db, args.evaluation_id)
             if record is None:

@@ -127,3 +127,68 @@ does not submit a duplicate transaction. Direct duplicate contract calls
 revert. The chain stores only the 32-byte root and emits `RootRegistered`; it
 does not store Evidence Records, Merkle proofs, ML artifacts, policy data, or
 operational SQLite state.
+
+## Compatibilidad canónica de Evidence Records
+
+La migración 006 añadió metadatos de canonicalización sin reescribir Evidence
+Records existentes. Antes de C3-T04, completa únicamente los cuatro metadatos
+ausentes de registros `invoice-evidence-v1` reconstruibles. No requiere MLflow,
+no crea batches ni proofs y no recalcula ningún anclaje.
+
+Desde cero, ejecuta el flujo de Clase 2 anterior; los nuevos records ya se
+persisten completos y el backfill será un no-op. Desde una SQLite de Clase 2,
+primero aplica las migraciones actuales y sigue el mismo flujo:
+
+```bash
+export INVOICEOPS_DB_PATH=var/invoiceops.db
+uv run python -c 'from invoiceops.legacy.db import run_migrations; run_migrations()'
+```
+
+Antes de escribir, crea una copia consistente fuera del repositorio y comprueba
+su hash y tamaño. En macOS/Linux:
+
+```bash
+backup_dir="$HOME/.invoiceops-backups"
+mkdir -p "$backup_dir"
+backup="$backup_dir/invoiceops-before-canonical-backfill-$(date +%Y%m%dT%H%M%S).db"
+sqlite3 "$INVOICEOPS_DB_PATH" ".backup '$backup'"
+shasum -a 256 "$backup"
+wc -c "$backup"
+```
+
+Ejecuta primero el modo sin escritura. El resultado lista los `evaluation_ids`
+candidatos. Si informa un error, no ejecutes el modo de escritura: corrige o
+restaura la SQLite y conserva el backup para análisis.
+
+```bash
+uv run python -m invoiceops.evidence backfill --db "$INVOICEOPS_DB_PATH" --dry-run
+uv run python -m invoiceops.evidence backfill --db "$INVOICEOPS_DB_PATH"
+uv run python -m invoiceops.evidence backfill --db "$INVOICEOPS_DB_PATH"
+```
+
+La segunda ejecución debe devolver `evaluation_ids: []`. Valida cada ID que
+devolvió la primera ejecución de escritura con `verify`; valida también la
+integridad SQLite y que no se añadieron batches ni proofs:
+
+```bash
+uv run python -m invoiceops.evidence verify --db "$INVOICEOPS_DB_PATH" --evaluation-id ID
+sqlite3 "$INVOICEOPS_DB_PATH" "PRAGMA integrity_check; PRAGMA foreign_key_check;"
+sqlite3 "$INVOICEOPS_DB_PATH" "SELECT COUNT(*) FROM evidence_batches; SELECT COUNT(*) FROM evidence_batch_items;"
+```
+
+El backfill se ejecuta en una transacción única: solo actualiza
+`canonical_version`, `canonical_payload`, `digest_algorithm` y `digest_hex`
+cuando los cuatro estaban en `NULL`. Rechaza y revierte el lote completo ante
+JSON no reconstruible, metadata parcial, versión canónica/algoritmo inesperado
+o metadata completa que no verifica. Conserva `id`, `evaluation_id`,
+`contract_version`, `evidence_json` y `created_at`.
+
+Para rollback, detén cualquier proceso que use la SQLite, conserva la base
+afectada para auditoría y restaura el snapshot verificado sobre la ruta
+operacional. Después vuelve a ejecutar `PRAGMA integrity_check` y el dry-run:
+
+```bash
+cp "$backup" "$INVOICEOPS_DB_PATH"
+sqlite3 "$INVOICEOPS_DB_PATH" "PRAGMA integrity_check;"
+uv run python -m invoiceops.evidence backfill --db "$INVOICEOPS_DB_PATH" --dry-run
+```

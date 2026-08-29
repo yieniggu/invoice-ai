@@ -1,10 +1,14 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from invoiceops.domain.policy import recommend_from_probability
 from invoiceops.evidence import (
+    EvidencePersistenceError,
     EvidenceProvenance,
     EvidenceRecord,
+    backfill_canonical_evidence_records,
     get_evidence_record,
     persist_evidence_records,
     verify_persisted_evidence_record,
@@ -146,6 +150,141 @@ def test_evidence_hash_migration_preserves_existing_v1_records(tmp_path) -> None
         ).fetchone()
     assert tuple(after) == (*tuple(before), None, None, None, None)
     assert get_evidence_record(db_path, 1) == record
+
+
+def test_canonical_backfill_migrates_pre_006_records_without_touching_protected_fields(tmp_path) -> None:
+    db_path = tmp_path / "invoiceops.db"
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    source_migrations_dir = Path(__file__).parents[2] / "migrations"
+    for source in source_migrations_dir.glob("00[1-5]_*.sql"):
+        (migrations_dir / source.name).write_text(source.read_text())
+
+    assert run_migrations(db_path, migrations_dir=migrations_dir) == 5
+    with _connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO invoices (
+                invoice_id, vendor_name, invoice_amount_cents, has_purchase_order,
+                three_way_match, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "INV-10023",
+                "Acme Industrial",
+                482_000,
+                1,
+                1,
+                "PENDING",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+    insert_model_evaluation(
+        db_path,
+        "INV-10023",
+        correlation_id="corr-backfill",
+        model_name="invoice-review",
+        model_version="7",
+        run_id="run-123",
+        manual_review_probability=0.8,
+        recommendation=recommend_from_probability(0.8),
+    )
+    record = _record(1)
+    with _connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO evidence_records (evaluation_id, contract_version, evidence_json, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                1,
+                record.contract_version,
+                json.dumps(record.to_dict(), sort_keys=True, separators=(",", ":")),
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+    assert run_migrations(db_path) == 2
+
+    with _connect(db_path) as connection:
+        before = connection.execute(
+            """
+            SELECT id, evaluation_id, contract_version, evidence_json, created_at,
+                   canonical_version, canonical_payload, digest_algorithm, digest_hex
+            FROM evidence_records
+            """
+        ).fetchone()
+        batch_counts = tuple(
+            connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in ("evidence_batches", "evidence_batch_items")
+        )
+
+    assert backfill_canonical_evidence_records(db_path, dry_run=True).evaluation_ids == [1]
+    with _connect(db_path) as connection:
+        assert tuple(connection.execute("SELECT * FROM evidence_records").fetchone()) == tuple(before)
+
+    assert backfill_canonical_evidence_records(db_path).evaluation_ids == [1]
+    assert verify_persisted_evidence_record(db_path, 1) is True
+    assert backfill_canonical_evidence_records(db_path).evaluation_ids == []
+    with _connect(db_path) as connection:
+        after = connection.execute(
+            """
+            SELECT id, evaluation_id, contract_version, evidence_json, created_at,
+                   canonical_version, canonical_payload, digest_algorithm, digest_hex
+            FROM evidence_records
+            """
+        ).fetchone()
+        assert tuple(after)[:5] == tuple(before)[:5]
+        assert all(value is not None for value in tuple(after)[5:])
+        assert batch_counts == tuple(
+            connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in ("evidence_batches", "evidence_batch_items")
+        )
+
+
+def test_canonical_backfill_rejects_invalid_legacy_record_atomically(tmp_path) -> None:
+    db_path = tmp_path / "invoiceops.db"
+    run_migrations(db_path)
+    seed_invoices(db_path)
+    for index, invoice_id in enumerate(("INV-10023", "INV-10024"), start=1):
+        insert_model_evaluation(
+            db_path,
+            invoice_id,
+            correlation_id=f"corr-backfill-{index}",
+            model_name="invoice-review",
+            model_version="7",
+            run_id=f"run-{index}",
+            manual_review_probability=0.8,
+            recommendation=recommend_from_probability(0.8),
+        )
+    with _connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO evidence_records (evaluation_id, contract_version, evidence_json, created_at)
+            VALUES (?, ?, ?, ?), (?, ?, ?, ?)
+            """,
+            (
+                1,
+                _record(1).contract_version,
+                json.dumps(_record(1).to_dict(), sort_keys=True, separators=(",", ":")),
+                "2026-01-01T00:00:00Z",
+                2,
+                _record(2).contract_version,
+                "{invalid-json",
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+
+    with pytest.raises(EvidencePersistenceError, match="stored evidence record is invalid"):
+        backfill_canonical_evidence_records(db_path)
+    with _connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT canonical_version, canonical_payload, digest_algorithm, digest_hex
+            FROM evidence_records ORDER BY evaluation_id
+            """
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [(None, None, None, None), (None, None, None, None)]
 
 
 def test_verify_returns_false_when_persisted_digest_is_altered(tmp_path) -> None:
