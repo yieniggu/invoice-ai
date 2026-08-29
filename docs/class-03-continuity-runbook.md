@@ -87,3 +87,43 @@ El batch persistido contiene root, cantidad, estado `verified`, índices de hoja
 - SQLite de Clase 2 accesible en la ruta resuelta por `INVOICEOPS_DB_PATH`.
 - MLflow en ejecución solo si se configura `MLFLOW_TRACKING_URI`.
 - Foundry (`forge` y `anvil`), `web3` y `contracts/` no son requisitos de este ticket: el inspector únicamente reporta si están disponibles.
+
+## C3-T04: local EVM root anchoring
+
+The canonical local EVM runtime is Foundry Anvil on chain ID `31337`. Start it
+in a dedicated terminal and keep it local to the teaching environment:
+
+```bash
+anvil --chain-id 31337
+```
+
+The only deployment configuration is the versioned
+`contracts/deployments/local.json` manifest. It starts with `address: null`.
+Deploying uses the first unlocked Anvil account, writes the resulting address
+and signer to that manifest, and never requires parsing console output:
+
+```bash
+forge test --root contracts
+uv run python -m invoiceops.anchor deploy
+```
+
+Do not add a private key to this repository, a notebook, or a command history.
+The Python API uses Anvil's unlocked local account. The deploy command fails
+explicitly when Anvil, the expected chain ID, Forge, or the manifest are not
+available.
+
+Anchor only a root returned by `get_evidence_batch(...).root_hash`; do not
+rebuild its Merkle tree. After deployment, the CLI delegates all work to
+`invoiceops.anchor`:
+
+```bash
+uv run python -m invoiceops.anchor register --root-hash ROOT_HASH
+uv run python -m invoiceops.anchor query --root-hash ROOT_HASH
+uv run python -m invoiceops.anchor status --root-hash ROOT_HASH
+```
+
+`register` is idempotent at the CLI level: it first queries the contract and
+does not submit a duplicate transaction. Direct duplicate contract calls
+revert. The chain stores only the 32-byte root and emits `RootRegistered`; it
+does not store Evidence Records, Merkle proofs, ML artifacts, policy data, or
+operational SQLite state.

@@ -1,0 +1,7 @@
+{
+  "address": null,
+  "chain_id": 31337,
+  "contract": "EvidenceRootAnchor",
+  "rpc_url": "http://127.0.0.1:8545",
+  "signer": null
+}
