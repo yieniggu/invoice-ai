@@ -39,7 +39,7 @@ def _record(evaluation_id: int) -> EvidenceRecord:
 def test_evidence_records_migration_links_one_v1_record_to_each_evaluation(tmp_path) -> None:
     db_path = tmp_path / "invoiceops.db"
 
-    assert run_migrations(db_path) == 6
+    assert run_migrations(db_path) == 7
 
     with _connect(db_path) as connection:
         columns = connection.execute("PRAGMA table_info(evidence_records)").fetchall()
@@ -171,3 +171,139 @@ def test_verify_returns_false_when_persisted_digest_is_altered(tmp_path) -> None
         )
 
     assert verify_persisted_evidence_record(db_path, 1) is False
+
+
+def test_evidence_batch_persists_verified_records_in_evaluation_id_order(tmp_path) -> None:
+    from invoiceops.evidence import create_evidence_batch, get_evidence_batch, verify_merkle_proof
+
+    db_path = tmp_path / "invoiceops.db"
+    seed_invoices(db_path)
+    for index, invoice_id in enumerate(("INV-10023", "INV-10024", "INV-10025"), start=1):
+        insert_model_evaluation(
+            db_path,
+            invoice_id,
+            correlation_id=f"corr-batch-{index}",
+            model_name="invoice-review",
+            model_version="7",
+            run_id=f"run-{index}",
+            manual_review_probability=0.8,
+            recommendation=recommend_from_probability(0.8),
+        )
+    persist_evidence_records(db_path, [_record(1), _record(2), _record(3)])
+
+    batch = create_evidence_batch(db_path, [3, 1, 2])
+    reordered_batch = create_evidence_batch(db_path, [2, 3, 1])
+    reread = get_evidence_batch(db_path, batch.id)
+
+    assert [item.evaluation_id for item in batch.items] == [1, 2, 3]
+    assert [item.leaf_index for item in batch.items] == [0, 1, 2]
+    assert reread == batch
+    assert reordered_batch.root_hash == batch.root_hash
+    assert all(verify_merkle_proof(item.leaf_hash, item.proof, batch.root_hash) for item in batch.items)
+
+
+def test_evidence_batch_rejects_structurally_invalid_persisted_proof(tmp_path) -> None:
+    import pytest
+
+    from invoiceops.evidence import (
+        EvidencePersistenceError,
+        create_evidence_batch,
+        get_evidence_batch,
+    )
+
+    db_path = tmp_path / "invoiceops.db"
+    seed_invoices(db_path)
+    insert_model_evaluation(
+        db_path,
+        "INV-10023",
+        correlation_id="corr-batch-invalid-proof",
+        model_name="invoice-review",
+        model_version="7",
+        run_id="run-1",
+        manual_review_probability=0.8,
+        recommendation=recommend_from_probability(0.8),
+    )
+    persist_evidence_records(db_path, [_record(1)])
+    batch = create_evidence_batch(db_path, [1])
+
+    with _connect(db_path) as connection:
+        connection.execute(
+            "UPDATE evidence_batch_items SET proof_json = ? WHERE batch_id = ?",
+            (json.dumps([["left"]]), batch.id),
+        )
+
+    with pytest.raises(EvidencePersistenceError, match="stored evidence batch item is invalid"):
+        get_evidence_batch(db_path, batch.id)
+
+
+def test_evidence_batch_rejects_invalid_selection_without_persisting_partial_batch(tmp_path) -> None:
+    import pytest
+
+    from invoiceops.evidence import EvidenceError, EvidencePersistenceError, create_evidence_batch
+
+    db_path = tmp_path / "invoiceops.db"
+    seed_invoices(db_path)
+    insert_model_evaluation(
+        db_path,
+        "INV-10023",
+        correlation_id="corr-batch-invalid",
+        model_name="invoice-review",
+        model_version="7",
+        run_id="run-1",
+        manual_review_probability=0.8,
+        recommendation=recommend_from_probability(0.8),
+    )
+    insert_model_evaluation(
+        db_path,
+        "INV-10024",
+        correlation_id="corr-batch-unpersisted",
+        model_name="invoice-review",
+        model_version="7",
+        run_id="run-2",
+        manual_review_probability=0.8,
+        recommendation=recommend_from_probability(0.8),
+    )
+    persist_evidence_records(db_path, [_record(1)])
+
+    with pytest.raises(EvidencePersistenceError, match="unique"):
+        create_evidence_batch(db_path, [1, 1])
+    with pytest.raises(EvidenceError, match="not found"):
+        create_evidence_batch(db_path, [1, 99])
+    with pytest.raises(EvidenceError, match="not found"):
+        create_evidence_batch(db_path, [1, 2])
+    with _connect(db_path) as connection:
+        connection.execute("UPDATE evidence_records SET digest_hex = '0' WHERE evaluation_id = 1")
+    with pytest.raises(EvidencePersistenceError, match="not verified"):
+        create_evidence_batch(db_path, [1])
+    with _connect(db_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM evidence_batches").fetchone()[0] == 0
+
+
+def test_evidence_batch_migration_adds_batch_tables_and_foreign_keys(tmp_path) -> None:
+    db_path = tmp_path / "invoiceops.db"
+
+    assert run_migrations(db_path) == 7
+
+    with _connect(db_path) as connection:
+        batches = connection.execute("PRAGMA table_info(evidence_batches)").fetchall()
+        items = connection.execute("PRAGMA table_info(evidence_batch_items)").fetchall()
+        foreign_keys = connection.execute("PRAGMA foreign_key_list(evidence_batch_items)").fetchall()
+        indexes = connection.execute("PRAGMA index_list(evidence_batch_items)").fetchall()
+    assert [column["name"] for column in batches] == [
+        "id",
+        "policy_version",
+        "root_hash",
+        "leaf_count",
+        "status",
+        "created_at",
+    ]
+    assert [column["name"] for column in items] == [
+        "batch_id",
+        "evaluation_id",
+        "evidence_contract_version",
+        "leaf_index",
+        "leaf_hash",
+        "proof_json",
+    ]
+    assert {key["table"] for key in foreign_keys} == {"evidence_batches", "evidence_records"}
+    assert "idx_evidence_batch_items_evaluation" in {index["name"] for index in indexes}

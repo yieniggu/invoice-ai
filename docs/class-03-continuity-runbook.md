@@ -67,9 +67,19 @@ uv run python -m invoiceops.evidence get --db "$INVOICEOPS_DB_PATH" --evaluation
 uv run python -m invoiceops.evidence hash --db "$INVOICEOPS_DB_PATH" --evaluation-id 1
 uv run python -m invoiceops.evidence verify --db "$INVOICEOPS_DB_PATH" --evaluation-id 1
 uv run python -m invoiceops.evidence compare --db "$INVOICEOPS_DB_PATH" --evaluation-id 1 --field reason --value altered
+uv run python -m invoiceops.evidence batch --db "$INVOICEOPS_DB_PATH" --evaluation-id 1 --evaluation-id 2
+uv run python -m invoiceops.evidence proof --db "$INVOICEOPS_DB_PATH" --batch-id 1 --evaluation-id 1
 ```
 
 `hash` devuelve el algoritmo, versión canónica y digest del registro persistido. `verify` reproduce el payload canónico desde `evidence_json` y compara payload y digest persistidos. `compare` modifica solo una copia en memoria y devuelve `tampered: true`; no escribe SQLite. Sustituye `1` por un ID realmente listado. Si falta `run_id` o alguno de los tres campos de provenance, `list` lo marca no utilizable con una causa explícita y `build`/`persist` fallan sin escribir evidencia parcial.
+
+## Batches Merkle y proofs
+
+`batch` exige una selección explícita de `--evaluation-id`; no existe un modo que incluya todas las evidencias. Cada ID debe ser único y corresponder a un Evidence Record `invoice-evidence-v1` persistido y verificable. La selección se guarda por `evaluation_id` ascendente, aunque los argumentos lleguen en otro orden. Si un ID no existe, se repite, no tiene evidencia persistida o su digest no verifica, la operación falla sin crear un batch parcial.
+
+La política `invoice-merkle-v1` usa exactamente los 32 bytes de `digest_hex` como hoja, sin recanonicalizar ni rehashear la evidencia. Para nodos internos calcula `keccak256(left_bytes || right_bytes)`; una hoja tiene como root su mismo digest y, si un nivel es impar, duplica su última hoja. Las proofs guardan la orientación explícita `left` o `right` junto al hash hermano.
+
+El batch persistido contiene root, cantidad, estado `verified`, índices de hojas y proofs. `batch-get` relee y verifica el root y todas las proofs almacenadas; `proof` devuelve esa proof persistida, no reconstruye otra alternativa. Conserva el `batch_id` que devuelve `batch` y úsalo en la demostración.
 
 ## Dependencias de runtime
 

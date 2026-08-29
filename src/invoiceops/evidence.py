@@ -15,17 +15,22 @@ from eth_hash.auto import keccak
 from mlflow.exceptions import MlflowException, RestException
 from mlflow.tracking import MlflowClient
 
+from invoiceops.legacy.db import get_evidence_batch as _get_evidence_batch_row
+from invoiceops.legacy.db import get_evidence_hash as _get_evidence_hash_row
 from invoiceops.legacy.db import get_evidence_record as _get_evidence_row
 from invoiceops.legacy.db import (
     get_model_evaluation,
+    insert_evidence_batch,
     insert_evidence_records,
     list_model_evaluation_records,
 )
+from invoiceops.legacy.db import list_evidence_batch_items as _list_evidence_batch_item_rows
 from invoiceops.legacy.db import list_evidence_records as _list_evidence_rows
 
 EVIDENCE_CONTRACT_VERSION = "invoice-evidence-v1"
 CANONICAL_SERIALIZATION_VERSION = "invoice-evidence-canonical-v1"
 KECCAK256_ALGORITHM = "keccak-256"
+MERKLE_POLICY_VERSION = "invoice-merkle-v1"
 
 
 class EvidenceError(ValueError):
@@ -34,6 +39,24 @@ class EvidenceError(ValueError):
 
 class EvidencePersistenceError(EvidenceError):
     """Raised when evidence records cannot be atomically persisted or decoded."""
+
+
+@dataclass(frozen=True)
+class EvidenceBatchItem:
+    evaluation_id: int
+    leaf_index: int
+    leaf_hash: str
+    proof: list[tuple[str, str]]
+
+
+@dataclass(frozen=True)
+class EvidenceBatch:
+    id: int
+    policy_version: str
+    root_hash: str
+    leaf_count: int
+    status: str
+    items: list[EvidenceBatchItem]
 
 
 def _canonical_value(value: object) -> object:
@@ -101,6 +124,89 @@ def canonicalize_evidence_record(record: EvidenceRecord | dict[str, object]) -> 
 def keccak256_hex(payload: bytes) -> str:
     """Return a lowercase Ethereum Keccak-256 hexadecimal digest without a 0x prefix."""
     return keccak(payload).hex()
+
+
+def _merkle_leaf_bytes(leaf_hash: str) -> bytes:
+    if not isinstance(leaf_hash, str) or len(leaf_hash) != 64:
+        raise EvidenceError("Merkle leaves must be 32-byte hexadecimal digests")
+    try:
+        leaf = bytes.fromhex(leaf_hash)
+    except ValueError as error:
+        raise EvidenceError("Merkle leaves must be 32-byte hexadecimal digests") from error
+    if leaf.hex() != leaf_hash:
+        raise EvidenceError("Merkle leaves must be lowercase hexadecimal digests")
+    return leaf
+
+
+def _merkle_levels(leaves: list[str], *, sort_leaves: bool = True) -> list[list[str]]:
+    if not leaves:
+        raise EvidenceError("at least one Merkle leaf is required")
+    levels = [sorted(leaves) if sort_leaves else leaves]
+    for leaf in levels[0]:
+        _merkle_leaf_bytes(leaf)
+    while len(levels[-1]) > 1:
+        current = levels[-1]
+        if len(current) % 2:
+            current = [*current, current[-1]]
+        levels.append(
+            [
+                keccak256_hex(_merkle_leaf_bytes(current[index]) + _merkle_leaf_bytes(current[index + 1]))
+                for index in range(0, len(current), 2)
+            ]
+        )
+    return levels
+
+
+def merkle_root(leaves: list[str]) -> str:
+    """Return the invoice-merkle-v1 root for digest leaves, sorted deterministically."""
+    return _merkle_levels(leaves)[-1][0]
+
+
+def _merkle_proof(
+    leaves: list[str], leaf_hash: str, *, sort_leaves: bool = True
+) -> list[tuple[str, str]]:
+    levels = _merkle_levels(leaves, sort_leaves=sort_leaves)
+    try:
+        index = levels[0].index(leaf_hash)
+    except ValueError as error:
+        raise EvidenceError("Merkle leaf is not part of the tree") from error
+    proof: list[tuple[str, str]] = []
+    for level in levels[:-1]:
+        extended = [*level, level[-1]] if len(level) % 2 else level
+        sibling_index = index - 1 if index % 2 else index + 1
+        proof.append(("left" if index % 2 else "right", extended[sibling_index]))
+        index //= 2
+    return proof
+
+
+def merkle_proof(leaves: list[str], leaf_hash: str) -> list[tuple[str, str]]:
+    return _merkle_proof(leaves, leaf_hash)
+
+
+def _ordered_merkle_root(leaves: list[str]) -> str:
+    return _merkle_levels(leaves, sort_leaves=False)[-1][0]
+
+
+def _ordered_merkle_proof(leaves: list[str], leaf_hash: str) -> list[tuple[str, str]]:
+    return _merkle_proof(leaves, leaf_hash, sort_leaves=False)
+
+
+def verify_merkle_proof(
+    leaf_hash: str, proof: list[tuple[str, str]], root_hash: str
+) -> bool:
+    try:
+        current = _merkle_leaf_bytes(leaf_hash)
+        for orientation, sibling_hash in proof:
+            sibling = _merkle_leaf_bytes(sibling_hash)
+            if orientation == "left":
+                current = bytes.fromhex(keccak256_hex(sibling + current))
+            elif orientation == "right":
+                current = bytes.fromhex(keccak256_hex(current + sibling))
+            else:
+                return False
+        return current.hex() == root_hash
+    except EvidenceError:
+        return False
 
 
 def evidence_digest(record: EvidenceRecord | dict[str, object]) -> str:
@@ -295,6 +401,103 @@ def verify_persisted_evidence_record(db_path: str | Path | None, evaluation_id: 
     )
 
 
+def create_evidence_batch(
+    db_path: str | Path | None, evaluation_ids: list[int]
+) -> EvidenceBatch:
+    if not evaluation_ids:
+        raise EvidencePersistenceError("at least one evaluation_id is required")
+    if any(isinstance(evaluation_id, bool) or not isinstance(evaluation_id, int) for evaluation_id in evaluation_ids):
+        raise EvidencePersistenceError("evaluation_ids must be integers")
+    if len(set(evaluation_ids)) != len(evaluation_ids):
+        raise EvidencePersistenceError("evaluation_ids must be unique")
+
+    items: list[EvidenceBatchItem] = []
+    for leaf_index, evaluation_id in enumerate(sorted(evaluation_ids)):
+        if not verify_persisted_evidence_record(db_path, evaluation_id):
+            raise EvidencePersistenceError(f"evidence record digest is not verified: {evaluation_id}")
+        row = _get_evidence_hash_row(db_path, evaluation_id, EVIDENCE_CONTRACT_VERSION)
+        if row is None or row["digest_hex"] is None:
+            raise EvidencePersistenceError(f"evidence record is not persisted: {evaluation_id}")
+        items.append(EvidenceBatchItem(evaluation_id, leaf_index, row["digest_hex"], []))
+
+    leaves = [item.leaf_hash for item in items]
+    root_hash = _ordered_merkle_root(leaves)
+    items = [
+        EvidenceBatchItem(
+            item.evaluation_id,
+            item.leaf_index,
+            item.leaf_hash,
+            _ordered_merkle_proof(leaves, item.leaf_hash),
+        )
+        for item in items
+    ]
+    try:
+        batch_id = insert_evidence_batch(
+            db_path,
+            policy_version=MERKLE_POLICY_VERSION,
+            root_hash=root_hash,
+            leaf_count=len(items),
+            created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            items=[
+                (
+                    item.evaluation_id,
+                    EVIDENCE_CONTRACT_VERSION,
+                    item.leaf_index,
+                    item.leaf_hash,
+                    json.dumps(item.proof, separators=(",", ":")),
+                )
+                for item in items
+            ],
+        )
+    except sqlite3.IntegrityError as error:
+        raise EvidencePersistenceError("evidence batch could not be persisted") from error
+    return get_evidence_batch(db_path, batch_id)
+
+
+def get_evidence_batch(db_path: str | Path | None, batch_id: int) -> EvidenceBatch:
+    batch_row = _get_evidence_batch_row(db_path, batch_id)
+    if batch_row is None:
+        raise EvidenceError(f"evidence batch not found: {batch_id}")
+    try:
+        items = []
+        for row in _list_evidence_batch_item_rows(db_path, batch_id):
+            proof = json.loads(row["proof_json"])
+            if not isinstance(proof, list) or any(
+                not isinstance(step, list)
+                or len(step) != 2
+                or not all(isinstance(value, str) for value in step)
+                for step in proof
+            ):
+                raise ValueError("stored Merkle proof is invalid")
+            items.append(
+                EvidenceBatchItem(
+                    row["evaluation_id"],
+                    row["leaf_index"],
+                    row["leaf_hash"],
+                    [tuple(step) for step in proof],
+                )
+            )
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise EvidencePersistenceError("stored evidence batch item is invalid") from error
+    batch = EvidenceBatch(
+        batch_row["id"],
+        batch_row["policy_version"],
+        batch_row["root_hash"],
+        batch_row["leaf_count"],
+        batch_row["status"],
+        items,
+    )
+    if (
+        batch.policy_version != MERKLE_POLICY_VERSION
+        or batch.status != "verified"
+        or batch.leaf_count != len(items)
+        or _ordered_merkle_root([item.leaf_hash for item in items]) != batch.root_hash
+        or any(not verify_merkle_proof(item.leaf_hash, item.proof, batch.root_hash) for item in items)
+    ):
+        raise EvidencePersistenceError("stored evidence batch is not verified")
+    return batch
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build and persist InvoiceOps evidence records.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -304,6 +507,16 @@ def main() -> None:
         command_parser = subparsers.add_parser(command)
         command_parser.add_argument("--db", required=True, type=Path)
         command_parser.add_argument("--evaluation-id", required=True, type=int, action="append")
+    batch_parser = subparsers.add_parser("batch")
+    batch_parser.add_argument("--db", required=True, type=Path)
+    batch_parser.add_argument("--evaluation-id", required=True, type=int, action="append")
+    batch_get_parser = subparsers.add_parser("batch-get")
+    batch_get_parser.add_argument("--db", required=True, type=Path)
+    batch_get_parser.add_argument("--batch-id", required=True, type=int)
+    proof_parser = subparsers.add_parser("proof")
+    proof_parser.add_argument("--db", required=True, type=Path)
+    proof_parser.add_argument("--batch-id", required=True, type=int)
+    proof_parser.add_argument("--evaluation-id", required=True, type=int)
     get_parser = subparsers.add_parser("get")
     get_parser.add_argument("--db", required=True, type=Path)
     get_parser.add_argument("--evaluation-id", required=True, type=int)
@@ -358,6 +571,27 @@ def main() -> None:
                 "tampered": compare_evidence_records(
                     record, replace(record, **{args.field: args.value})
                 ),
+            }
+        elif args.command == "batch":
+            result = asdict(create_evidence_batch(args.db, args.evaluation_id))
+        elif args.command == "batch-get":
+            result = asdict(get_evidence_batch(args.db, args.batch_id))
+        elif args.command == "proof":
+            batch = get_evidence_batch(args.db, args.batch_id)
+            item = next(
+                (item for item in batch.items if item.evaluation_id == args.evaluation_id), None
+            )
+            if item is None:
+                raise EvidenceError(
+                    f"evaluation_id is not part of evidence batch: {args.evaluation_id}"
+                )
+            result = {
+                "batch_id": batch.id,
+                "evaluation_id": item.evaluation_id,
+                "leaf_hash": item.leaf_hash,
+                "proof": item.proof,
+                "root_hash": batch.root_hash,
+                "verified": verify_merkle_proof(item.leaf_hash, item.proof, batch.root_hash),
             }
         else:
             records = build_evidence_records(args.db, args.evaluation_id)

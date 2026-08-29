@@ -34,7 +34,7 @@ def test_migrations_apply_in_order(tmp_path: Path) -> None:
 def test_migrations_are_idempotent(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     db_path = tmp_path / "invoiceops.db"
 
-    assert run_migrations(db_path) == 6
+    assert run_migrations(db_path) == 7
     assert run_migrations(db_path) == 0
 
     assert "0 migrations pending" in capsys.readouterr().out
@@ -49,6 +49,7 @@ def test_migrations_are_idempotent(tmp_path: Path, capsys: pytest.CaptureFixture
         (4, "notebook_audit_idempotency"),
         (5, "evidence_records"),
         (6, "evidence_hashes"),
+        (7, "evidence_batches"),
     ]
 
 
@@ -239,7 +240,7 @@ def test_legacy_database_is_adopted_without_changing_data(tmp_path: Path) -> Non
             "SELECT sql FROM sqlite_master WHERE name = 'invoices'"
         ).fetchone()[0]
 
-    assert run_migrations(db_path) == 5
+    assert run_migrations(db_path) == 6
 
     with _connect(db_path) as connection:
         after = connection.execute(
@@ -258,7 +259,7 @@ def test_legacy_database_is_adopted_without_changing_data(tmp_path: Path) -> Non
         ).fetchone()
     assert after != before
     assert count == 1
-    assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6]
+    assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6, 7]
     assert tuple(risk_context) == (0, 0, 0, 1.0, "medium")
 
 
@@ -299,7 +300,7 @@ def test_create_app_initializes_an_empty_database(tmp_path: Path) -> None:
     create_app(db_path)
 
     with _connect(db_path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 6
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 7
         assert connection.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 0
 
 
@@ -322,7 +323,7 @@ def test_reset_demo_migrates_then_seeds(tmp_path: Path, monkeypatch: pytest.Monk
     )
 
     with _connect(db_path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 6
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 7
         assert connection.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 8
     assert "Invoices: 8" in result.stdout
     assert f"Resetting database: {db_path}" in result.stdout

@@ -101,6 +101,20 @@ def test_evidence_cli_hashes_and_verifies_persisted_evidence(tmp_path, monkeypat
     capsys.readouterr()
 
     monkeypatch.setattr(
+        sys, "argv", ["evidence", "batch", "--db", str(db_path), "--evaluation-id", "1"]
+    )
+    evidence.main()
+    batch = json.loads(capsys.readouterr().out)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["evidence", "proof", "--db", str(db_path), "--batch-id", str(batch["id"]), "--evaluation-id", "1"],
+    )
+    evidence.main()
+    proof = json.loads(capsys.readouterr().out)
+
+    monkeypatch.setattr(
         sys, "argv", ["evidence", "hash", "--db", str(db_path), "--evaluation-id", "1"]
     )
     evidence.main()
@@ -114,6 +128,8 @@ def test_evidence_cli_hashes_and_verifies_persisted_evidence(tmp_path, monkeypat
     assert hashed["algorithm"] == "keccak-256"
     assert hashed["digest"] == evidence.evidence_digest(evidence.get_evidence_record(db_path, 1))
     assert json.loads(capsys.readouterr().out) == {"evaluation_id": 1, "verified": True}
+    assert proof["root_hash"] == batch["root_hash"]
+    assert proof["verified"] is True
 
     monkeypatch.setattr(
         sys,

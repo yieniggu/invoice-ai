@@ -404,8 +404,74 @@ def list_evidence_records(db_path: str | Path | None, contract_version: str) -> 
         ).fetchall()
 
 
+def get_evidence_hash(
+    db_path: str | Path | None, evaluation_id: int, contract_version: str
+) -> sqlite3.Row | None:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            """
+            SELECT evaluation_id, digest_hex
+            FROM evidence_records
+            WHERE evaluation_id = ? AND contract_version = ?
+            """,
+            (evaluation_id, contract_version),
+        ).fetchone()
+
+
+def insert_evidence_batch(
+    db_path: str | Path | None,
+    *,
+    policy_version: str,
+    root_hash: str,
+    leaf_count: int,
+    created_at: str,
+    items: list[tuple[int, str, int, str, str]],
+) -> int:
+    with _connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute(
+            """
+            INSERT INTO evidence_batches (
+                policy_version, root_hash, leaf_count, status, created_at
+            ) VALUES (?, ?, ?, 'verified', ?)
+            """,
+            (policy_version, root_hash, leaf_count, created_at),
+        )
+        batch_id = cursor.lastrowid
+        connection.executemany(
+            """
+            INSERT INTO evidence_batch_items (
+                batch_id, evaluation_id, evidence_contract_version, leaf_index, leaf_hash, proof_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [(batch_id, *item) for item in items],
+        )
+    return batch_id
+
+
+def get_evidence_batch(db_path: str | Path | None, batch_id: int) -> sqlite3.Row | None:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            "SELECT * FROM evidence_batches WHERE id = ?", (batch_id,)
+        ).fetchone()
+
+
+def list_evidence_batch_items(db_path: str | Path | None, batch_id: int) -> list[sqlite3.Row]:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            """
+            SELECT * FROM evidence_batch_items
+            WHERE batch_id = ?
+            ORDER BY leaf_index
+            """,
+            (batch_id,),
+        ).fetchall()
+
+
 def reset_db(db_path: str | Path | None = None) -> None:
     with _connect(db_path) as connection:
+        connection.execute("DROP TABLE IF EXISTS evidence_batch_items")
+        connection.execute("DROP TABLE IF EXISTS evidence_batches")
         connection.execute("DROP TABLE IF EXISTS evidence_records")
         connection.execute("DROP TABLE IF EXISTS model_evaluations")
         connection.execute("DROP TABLE IF EXISTS decision_events")

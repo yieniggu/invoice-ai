@@ -8,6 +8,11 @@ from invoiceops.domain.policy import recommend_from_probability
 from invoiceops.legacy.db import insert_model_evaluation
 from invoiceops.legacy.seed import seed_invoices
 
+MERKLE_LEAF_A = "0f" * 32
+MERKLE_LEAF_B = "1f" * 32
+MERKLE_LEAF_C = "2f" * 32
+MERKLE_LEAF_D = "3f" * 32
+
 
 def _run(*, dataset_version: str = "invoice-risk-v1") -> SimpleNamespace:
     return SimpleNamespace(
@@ -224,3 +229,41 @@ def test_evidence_hash_uses_ethereum_keccak_and_detects_an_altered_copy(tmp_path
     assert compare_evidence_records(record, replace(record)) is False
     assert compare_evidence_records(record, replace(record, reason="altered")) is True
     assert evidence_digest(record) != evidence_digest(replace(record, reason="altered"))
+
+
+def test_merkle_root_is_deterministic_independent_of_input_order() -> None:
+    from invoiceops.evidence import merkle_root
+
+    leaves = [MERKLE_LEAF_C, MERKLE_LEAF_A, MERKLE_LEAF_B]
+
+    assert merkle_root(leaves) == merkle_root(list(reversed(leaves)))
+
+
+def test_merkle_proof_verifies_and_rejects_a_manipulated_sibling() -> None:
+    from invoiceops.evidence import merkle_proof, merkle_root, verify_merkle_proof
+
+    leaves = [MERKLE_LEAF_C, MERKLE_LEAF_A, MERKLE_LEAF_B]
+    root = merkle_root(leaves)
+    proof = merkle_proof(leaves, MERKLE_LEAF_A)
+    manipulated_proof = [*proof]
+    manipulated_proof[0] = ("left", MERKLE_LEAF_D)
+
+    assert verify_merkle_proof(MERKLE_LEAF_A, proof, root) is True
+    assert verify_merkle_proof(MERKLE_LEAF_A, manipulated_proof, root) is False
+
+
+def test_merkle_policy_duplicates_the_final_leaf_for_an_odd_batch() -> None:
+    from invoiceops.evidence import MERKLE_POLICY_VERSION, merkle_root
+
+    odd_leaves = [MERKLE_LEAF_A, MERKLE_LEAF_B, MERKLE_LEAF_C]
+
+    assert MERKLE_POLICY_VERSION == "invoice-merkle-v1"
+    assert merkle_root(odd_leaves) == merkle_root([*odd_leaves, MERKLE_LEAF_C])
+
+
+def test_merkle_root_changes_when_a_leaf_changes() -> None:
+    from invoiceops.evidence import merkle_root
+
+    assert merkle_root([MERKLE_LEAF_A, MERKLE_LEAF_B]) != merkle_root(
+        [MERKLE_LEAF_D, MERKLE_LEAF_B]
+    )
