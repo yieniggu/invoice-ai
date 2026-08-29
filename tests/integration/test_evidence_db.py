@@ -43,7 +43,7 @@ def _record(evaluation_id: int) -> EvidenceRecord:
 def test_evidence_records_migration_links_one_v1_record_to_each_evaluation(tmp_path) -> None:
     db_path = tmp_path / "invoiceops.db"
 
-    assert run_migrations(db_path) == 7
+    assert run_migrations(db_path) == 8
 
     with _connect(db_path) as connection:
         columns = connection.execute("PRAGMA table_info(evidence_records)").fetchall()
@@ -152,7 +152,9 @@ def test_evidence_hash_migration_preserves_existing_v1_records(tmp_path) -> None
     assert get_evidence_record(db_path, 1) == record
 
 
-def test_canonical_backfill_migrates_pre_006_records_without_touching_protected_fields(tmp_path) -> None:
+def test_canonical_backfill_migrates_pre_006_records_without_touching_protected_fields(
+    tmp_path,
+) -> None:
     db_path = tmp_path / "invoiceops.db"
     migrations_dir = tmp_path / "migrations"
     migrations_dir.mkdir()
@@ -204,7 +206,7 @@ def test_canonical_backfill_migrates_pre_006_records_without_touching_protected_
                 "2026-01-01T00:00:00Z",
             ),
         )
-    assert run_migrations(db_path) == 2
+    assert run_migrations(db_path) == 3
 
     with _connect(db_path) as connection:
         before = connection.execute(
@@ -221,7 +223,9 @@ def test_canonical_backfill_migrates_pre_006_records_without_touching_protected_
 
     assert backfill_canonical_evidence_records(db_path, dry_run=True).evaluation_ids == [1]
     with _connect(db_path) as connection:
-        assert tuple(connection.execute("SELECT * FROM evidence_records").fetchone()) == tuple(before)
+        assert tuple(connection.execute("SELECT * FROM evidence_records").fetchone()) == tuple(
+            before
+        )
 
     assert backfill_canonical_evidence_records(db_path).evaluation_ids == [1]
     assert verify_persisted_evidence_record(db_path, 1) is True
@@ -338,7 +342,9 @@ def test_evidence_batch_persists_verified_records_in_evaluation_id_order(tmp_pat
     assert [item.leaf_index for item in batch.items] == [0, 1, 2]
     assert reread == batch
     assert reordered_batch.root_hash == batch.root_hash
-    assert all(verify_merkle_proof(item.leaf_hash, item.proof, batch.root_hash) for item in batch.items)
+    assert all(
+        verify_merkle_proof(item.leaf_hash, item.proof, batch.root_hash) for item in batch.items
+    )
 
 
 def test_evidence_batch_rejects_structurally_invalid_persisted_proof(tmp_path) -> None:
@@ -375,7 +381,9 @@ def test_evidence_batch_rejects_structurally_invalid_persisted_proof(tmp_path) -
         get_evidence_batch(db_path, batch.id)
 
 
-def test_evidence_batch_rejects_invalid_selection_without_persisting_partial_batch(tmp_path) -> None:
+def test_evidence_batch_rejects_invalid_selection_without_persisting_partial_batch(
+    tmp_path,
+) -> None:
     import pytest
 
     from invoiceops.evidence import EvidenceError, EvidencePersistenceError, create_evidence_batch
@@ -421,12 +429,14 @@ def test_evidence_batch_rejects_invalid_selection_without_persisting_partial_bat
 def test_evidence_batch_migration_adds_batch_tables_and_foreign_keys(tmp_path) -> None:
     db_path = tmp_path / "invoiceops.db"
 
-    assert run_migrations(db_path) == 7
+    assert run_migrations(db_path) == 8
 
     with _connect(db_path) as connection:
         batches = connection.execute("PRAGMA table_info(evidence_batches)").fetchall()
         items = connection.execute("PRAGMA table_info(evidence_batch_items)").fetchall()
-        foreign_keys = connection.execute("PRAGMA foreign_key_list(evidence_batch_items)").fetchall()
+        foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(evidence_batch_items)"
+        ).fetchall()
         indexes = connection.execute("PRAGMA index_list(evidence_batch_items)").fetchall()
     assert [column["name"] for column in batches] == [
         "id",
@@ -446,3 +456,50 @@ def test_evidence_batch_migration_adds_batch_tables_and_foreign_keys(tmp_path) -
     ]
     assert {key["table"] for key in foreign_keys} == {"evidence_batches", "evidence_records"}
     assert "idx_evidence_batch_items_evaluation" in {index["name"] for index in indexes}
+
+
+def test_evidence_anchor_migration_is_additive_and_preserves_verified_batch_status(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "invoiceops.db"
+
+    assert run_migrations(db_path) == 8
+
+    with _connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO evidence_batches (policy_version, root_hash, leaf_count, status, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("invoice-merkle-v1", "a" * 64, 1, "verified", "2026-01-01T00:00:00Z"),
+        )
+        anchor_columns = connection.execute("PRAGMA table_info(evidence_batch_anchors)").fetchall()
+        anchor_foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(evidence_batch_anchors)"
+        ).fetchall()
+        anchor_indexes = connection.execute("PRAGMA index_list(evidence_batch_anchors)").fetchall()
+        batch_status = connection.execute(
+            "SELECT status FROM evidence_batches WHERE id = 1"
+        ).fetchone()[0]
+
+    assert [column["name"] for column in anchor_columns] == [
+        "id",
+        "batch_id",
+        "root_hash",
+        "chain_id",
+        "contract_address",
+        "transaction_hash",
+        "block_number",
+        "gas_used",
+        "submitted_at",
+        "anchored_at",
+        "status",
+    ]
+    assert [(key["table"], key["from"], key["to"]) for key in anchor_foreign_keys] == [
+        ("evidence_batches", "batch_id", "id")
+    ]
+    assert {index["name"] for index in anchor_indexes} == {
+        "idx_evidence_batch_anchors_batch_id",
+        "idx_evidence_batch_anchors_transaction_hash",
+    }
+    assert batch_status == "verified"

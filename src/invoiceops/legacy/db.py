@@ -468,8 +468,116 @@ def list_evidence_batch_items(db_path: str | Path | None, batch_id: int) -> list
         ).fetchall()
 
 
+def get_evidence_batch_anchor(db_path: str | Path | None, anchor_id: int) -> sqlite3.Row | None:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            "SELECT * FROM evidence_batch_anchors WHERE id = ?", (anchor_id,)
+        ).fetchone()
+
+
+def get_latest_evidence_batch_anchor(
+    db_path: str | Path | None, batch_id: int
+) -> sqlite3.Row | None:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            """
+            SELECT * FROM evidence_batch_anchors
+            WHERE batch_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (batch_id,),
+        ).fetchone()
+
+
+def insert_evidence_batch_anchor(
+    db_path: str | Path | None,
+    *,
+    batch_id: int,
+    root_hash: str,
+    chain_id: int,
+    contract_address: str,
+    transaction_hash: str | None,
+    submitted_at: str,
+    status: str,
+) -> int:
+    with _connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        batch = connection.execute(
+            "SELECT root_hash, status FROM evidence_batches WHERE id = ?", (batch_id,)
+        ).fetchone()
+        if batch is None:
+            raise LookupError(f"Evidence batch not found: {batch_id}")
+        if batch["status"] != "verified" or batch["root_hash"] != root_hash:
+            raise ValueError("Evidence batch is not the verified canonical root")
+        cursor = connection.execute(
+            """
+            INSERT INTO evidence_batch_anchors (
+                batch_id, root_hash, chain_id, contract_address, transaction_hash,
+                submitted_at, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                batch_id,
+                root_hash,
+                chain_id,
+                contract_address,
+                transaction_hash,
+                submitted_at,
+                status,
+            ),
+        )
+    return cursor.lastrowid
+
+
+def update_evidence_batch_anchor(
+    db_path: str | Path | None,
+    anchor_id: int,
+    *,
+    status: str,
+    block_number: int | None = None,
+    gas_used: int | None = None,
+    anchored_at: str | None = None,
+) -> None:
+    with _connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if (
+            connection.execute(
+                "SELECT 1 FROM evidence_batch_anchors WHERE id = ?", (anchor_id,)
+            ).fetchone()
+            is None
+        ):
+            raise LookupError(f"Evidence batch anchor not found: {anchor_id}")
+        connection.execute(
+            """
+            UPDATE evidence_batch_anchors
+            SET status = ?, block_number = ?, gas_used = ?, anchored_at = ?
+            WHERE id = ?
+            """,
+            (status, block_number, gas_used, anchored_at, anchor_id),
+        )
+
+
+def set_evidence_batch_anchor_transaction(
+    db_path: str | Path | None, anchor_id: int, transaction_hash: str
+) -> None:
+    with _connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute(
+            """
+            UPDATE evidence_batch_anchors
+            SET transaction_hash = ?, status = 'submitted'
+            WHERE id = ?
+            """,
+            (transaction_hash, anchor_id),
+        )
+        if cursor.rowcount != 1:
+            raise LookupError(f"Evidence batch anchor not found: {anchor_id}")
+
+
 def reset_db(db_path: str | Path | None = None) -> None:
     with _connect(db_path) as connection:
+        connection.execute("DROP TABLE IF EXISTS evidence_batch_anchors")
         connection.execute("DROP TABLE IF EXISTS evidence_batch_items")
         connection.execute("DROP TABLE IF EXISTS evidence_batches")
         connection.execute("DROP TABLE IF EXISTS evidence_records")

@@ -128,6 +128,54 @@ revert. The chain stores only the 32-byte root and emits `RootRegistered`; it
 does not store Evidence Records, Merkle proofs, ML artifacts, policy data, or
 operational SQLite state.
 
+## C3-T05: persistent batch anchoring and recovery
+
+Apply migrations before anchoring. The batch must already be a real C3-T03
+`verified` batch; its persisted root is the only root accepted by the client.
+Do not provide a reconstructed root, alter `evidence_batches.status`, or store
+keys in SQLite, the manifest, the notebook, or shell history.
+
+```bash
+uv run python -c 'from invoiceops.legacy.db import run_migrations; run_migrations()'
+uv run python -m invoiceops.anchor batch-anchor --db "$INVOICEOPS_DB_PATH" --batch-id BATCH_ID
+```
+
+`batch-anchor` resolves the deployment manifest, uses Anvil's unlocked local
+account, submits the persisted root once, immediately stores the transaction
+hash as `submitted`, and then reconciles the receipt. Normally, a verified
+result records the chain ID, contract address, transaction hash, block number,
+gas used, submission and confirmation times, and the `RootRegistered` receipt
+event.
+The batch itself remains `verified`; anchoring lifecycle data belongs only in
+`evidence_batch_anchors`.
+
+If the receipt is unavailable after submission, the anchor becomes `ambiguous`.
+This is not a confirmed failure and must not be solved by resubmitting. Inspect
+the stored identity and reconcile the same transaction hash after Anvil/RPC is
+available again:
+
+```bash
+uv run python -m invoiceops.anchor batch-status --db "$INVOICEOPS_DB_PATH" --anchor-id ANCHOR_ID
+uv run python -m invoiceops.anchor batch-reconcile --db "$INVOICEOPS_DB_PATH" --anchor-id ANCHOR_ID
+```
+
+If Anvil accepted the transaction but the process or RPC failed before SQLite
+persisted `transaction_hash`, the reserved anchor remains `ambiguous` with no
+hash. Run the same `batch-reconcile` command after the RPC is available. It
+may confirm that the reserved root exists with `isRootRegistered`, but that is
+not a canonical receipt and it must leave the anchor `ambiguous`. Recover the
+transaction identity and its complete receipt, including `RootRegistered`,
+before recording `verified`. Never run `batch-anchor` again for that `batch_id`:
+the unique reservation prevents a second submit.
+
+Reconciliation reads the transaction receipt and validates `RootRegistered` when
+the provider exposes decoded events. A reverted receipt is `failed`, even when
+the root already exists on-chain from another transaction; retain that original
+transaction hash, block number, and gas used for diagnosis. It never sends a
+replacement transaction. If the contract reports a root registered without a
+local anchor, do not submit again: recover the prior transaction identity and
+complete receipt before recording a canonical anchor.
+
 ## Compatibilidad canónica de Evidence Records
 
 La migración 006 añadió metadatos de canonicalización sin reescribir Evidence
