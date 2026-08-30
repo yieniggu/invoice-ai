@@ -570,6 +570,52 @@ def test_batch_anchor_timeout_is_persisted_and_reconciled_without_resubmitting(
     ]
 
 
+def test_anchor_evidence_batch_waits_for_the_submitted_receipt_before_reconciling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invoiceops import anchor
+
+    submitted = anchor.EvidenceBatchAnchor(
+        id=7,
+        batch_id=3,
+        root_hash=ROOT_HASH,
+        chain_id=31337,
+        contract_address=ADDRESS,
+        transaction_hash="ab" * 32,
+        block_number=None,
+        gas_used=None,
+        submitted_at="2026-01-01T00:00:00Z",
+        anchored_at=None,
+        status="submitted",
+    )
+    calls: list[object] = []
+    monkeypatch.setattr(anchor, "submit_evidence_batch_anchor", lambda *args, **kwargs: submitted)
+    monkeypatch.setattr(
+        anchor,
+        "reconcile_evidence_batch_anchor",
+        lambda db_path, anchor_id, web3: calls.append((db_path, anchor_id, web3)) or submitted,
+    )
+    web3 = SimpleNamespace(
+        eth=SimpleNamespace(
+            wait_for_transaction_receipt=lambda transaction_hash, timeout: calls.append(
+                (transaction_hash, timeout)
+            )
+        )
+    )
+
+    result = anchor.anchor_evidence_batch(
+        "invoiceops.db",
+        batch_id=3,
+        root_hash=ROOT_HASH,
+        web3=web3,
+        deployment=SimpleNamespace(),
+        signer=SIGNER,
+    )
+
+    assert result == submitted
+    assert calls == [(bytes.fromhex("ab" * 32), 5), ("invoiceops.db", 7, web3)]
+
+
 def test_batch_anchor_keeps_a_registered_root_ambiguous_when_hash_persistence_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

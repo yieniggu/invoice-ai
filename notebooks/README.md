@@ -56,7 +56,7 @@ Abre la URL que muestra JupyterLab y selecciona el kernel **InvoiceOps Python
 | `03_mlflow_and_model_selection.ipynb` | Registras runs en MLflow. | Un run conserva métricas, parámetros y artifacts de un experimento. |
 | `04_registry_gate_and_promotion.ipynb` | Aplicas el Gate y registras versiones. | Un run no es una Model Version; `champion` es un alias que puede moverse. |
 | `05_serving_policy_and_audit.ipynb` | Cargas `champion`, predices y auditas. | Modelo, Policy y auditoría son responsabilidades diferentes. |
-| `06_class_03_continuity_and_demo_state.ipynb` | Inspeccionas el estado acumulado de Clase 2. | Clase 3 usa la SQLite y MLflow canónicos; IDs y champion son dinámicos. |
+| `06_class_03_continuity_and_demo_state.ipynb` | Inspeccionas y verificas el estado acumulado de Clase 2 y Clase 3. | Clase 3 usa la SQLite y MLflow canónicos; evidencia, proofs, batch y anchor se revalidan sin writes. |
 
 ## Qué comprobar al avanzar
 
@@ -101,4 +101,4 @@ MLFLOW_TRACKING_URI=http://127.0.0.1:5000 \
 uv run python -m invoiceops.demo_state
 ```
 
-Si no hay evaluaciones, runs o `champion`, vuelve al flujo explícito de Clase 2. `var/t23_5_demo/` es solo estado técnico histórico de notebooks y no debe usarse como fuente canónica. Consulta el [runbook de continuidad de Clase 3](../docs/class-03-continuity-runbook.md) para el procedimiento completo.
+Si no hay evaluaciones, runs o `champion`, vuelve al flujo explícito de Clase 2. Para el cierre de Clase 3, el Notebook 06 también usa `verify_evidence_batch` y un tamper exclusivamente in-memory; el root EVM solo es válido si cada check del resultado es `true`. `var/t23_5_demo/` es solo estado técnico histórico de notebooks y no debe usarse como fuente canónica. Consulta el [runbook de continuidad de Clase 3](../docs/class-03-continuity-runbook.md) para el procedimiento completo.

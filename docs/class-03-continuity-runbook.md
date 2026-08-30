@@ -81,12 +81,69 @@ La política `invoice-merkle-v1` usa exactamente los 32 bytes de `digest_hex` co
 
 El batch persistido contiene root, cantidad, estado `verified`, índices de hojas y proofs. `batch-get` relee y verifica el root y todas las proofs almacenadas; `proof` devuelve esa proof persistida, no reconstruye otra alternativa. Conserva el `batch_id` que devuelve `batch` y úsalo en la demostración.
 
+## C3-T06: verificación end-to-end y preflight
+
+Antes de la demostración, ejecuta el inspector read-only. Además de los campos
+existentes, informa IDs de evaluaciones utilizables cuando MLflow está disponible,
+el estado del deployment/RPC EVM y, opcionalmente, el anchor del batch elegido.
+No crea SQLite, migraciones, servicios, contratos ni transacciones.
+
+```bash
+export INVOICEOPS_DB_PATH=var/invoiceops.db
+export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
+export INVOICEOPS_EVIDENCE_BATCH_ID=BATCH_ID # opcional
+uv run python -m invoiceops.demo_state
+```
+
+`evidence.usable_evaluation_ids` se deriva de las evaluaciones persistidas y su
+lineage MLflow real. `evm_runtime.status` es `not_deployed` mientras el manifest
+no tenga dirección, `rpc_unavailable` si el deployment existe pero el RPC no
+responde, y `available` solo cuando ambos son utilizables. Si se indicó un batch,
+`anchor_status` es su lifecycle persistido; `missing` nunca equivale a un root
+confirmado.
+
+Tras crear un batch y completar el anchor, verifica una evaluación perteneciente
+al batch con la API reusable o la CLI equivalente:
+
+```bash
+uv run python -m invoiceops.verification \
+  --db "$INVOICEOPS_DB_PATH" \
+  --batch-id BATCH_ID \
+  --evaluation-id EVALUATION_ID
+```
+
+El JSON conserva `canonical_hash_valid`, `proof_valid`, `batch_valid`,
+`anchor_persisted`, `root_on_chain` y `valid`, y añade `evidence_leaf_valid`.
+Este último confirma que el digest canónico de la Evidence Record actual es la
+misma hoja persistida en el batch. `valid` es `true` exclusivamente si todos los
+checks son verdaderos. La verificación vuelve a leer las fuentes persistidas y
+consulta el mismo RPC del anchor; no vuelve a construir Evidence Records,
+batches, proofs ni anchors, y no escribe datos. Un anchor ausente, una proof o
+batch inválido, una Evidence Record que no corresponde a su hoja, un root no
+registrado o un RPC inaccesible da `valid: false` sin false positive.
+
+Para demostrar tampering, usa una copia en memoria: `compare_evidence_records`
+debe devolver `true` para la copia alterada. No edites SQLite para simular una
+demostración. El Notebook 06 invoca tanto esta API como esa comparación; ejecútalo
+manualmente con el laboratorio validado. Su render generado está en
+`notebooks/rendered/06_class_03_continuity_and_demo_state.html`: conserva la
+salida real del preflight, la verificación end-to-end y la detección de tampering
+en memoria. Regénéralo ejecutando el notebook 06 solo después de completar el
+laboratorio validado y cuando cambien sus celdas, datos de demostración o salida
+observable; no edites el HTML manualmente.
+
+Fallback: si `evm_runtime.status` no es `available`, conserva el resultado
+inválido, corrige el único runtime local existente y vuelve a ejecutar solo la
+verificación. No inicies un Anvil/MLflow paralelo ni reproceses `batch-anchor`;
+si el anchor es `ambiguous`, sigue la reconciliación C3-T05 antes de reintentar
+la comprobación read-only.
+
 ## Dependencias de runtime
 
 - Python 3.12, `uv` y las dependencias del proyecto (`uv sync --all-groups`).
 - SQLite de Clase 2 accesible en la ruta resuelta por `INVOICEOPS_DB_PATH`.
 - MLflow en ejecución solo si se configura `MLFLOW_TRACKING_URI`.
-- Foundry (`forge` y `anvil`), `web3` y `contracts/` no son requisitos de este ticket: el inspector únicamente reporta si están disponibles.
+- Foundry (`forge` y `anvil`), `web3` y `contracts/` son necesarios solo para confirmar el root EVM de C3-T06; el inspector y la verificación no los inician ni despliegan.
 
 ## C3-T04: local EVM root anchoring
 

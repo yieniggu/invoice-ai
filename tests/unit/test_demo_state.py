@@ -34,6 +34,11 @@ def test_inspect_demo_state_reads_configured_database_without_writing(
     monkeypatch.setenv("INVOICEOPS_DB_PATH", str(db_path))
     monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
 
+    def no_deployment():
+        raise demo_state.AnchorConfigurationError("deployment is intentionally absent")
+
+    monkeypatch.setattr(demo_state, "resolve_deployment", no_deployment)
+
     state = demo_state.inspect_demo_state()
 
     assert state.database.path == str(db_path)
@@ -42,6 +47,8 @@ def test_inspect_demo_state_reads_configured_database_without_writing(
     assert state.database.evaluation_ids == [1, 2, 3]
     assert state.database.run_ids == ["run-001", "run-002"]
     assert state.mlflow.status == "not_configured"
+    assert state.evidence.status == "mlflow_not_available"
+    assert state.evm_runtime.status == "not_deployed"
 
 
 def test_inspect_demo_state_does_not_create_a_missing_database_or_parent_directory(
@@ -156,6 +163,39 @@ def test_inspect_demo_state_reports_unavailable_or_empty_mlflow(
     assert demo_state.inspect_demo_state().mlflow.status == "empty"
 
 
+def test_inspect_demo_state_reports_deployment_and_rpc_read_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from invoiceops import demo_state
+
+    db_path = tmp_path / "missing" / "invoiceops.db"
+    monkeypatch.setenv("INVOICEOPS_DB_PATH", str(db_path))
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    monkeypatch.setenv("INVOICEOPS_EVM_RPC_URL", "http://rpc.test")
+    monkeypatch.setattr(
+        demo_state,
+        "resolve_deployment",
+        lambda: SimpleNamespace(
+            chain_id=31337, address="0x1234567890123456789012345678901234567890"
+        ),
+    )
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        demo_state,
+        "chain",
+        lambda rpc_url, expected_chain_id: calls.append((rpc_url, expected_chain_id)),
+    )
+
+    state = demo_state.inspect_demo_state()
+
+    assert state.evm_runtime.status == "available"
+    assert state.evm_runtime.rpc_url == "http://rpc.test"
+    assert state.evm_runtime.chain_id == 31337
+    assert state.evm_runtime.contract_address == "0x1234567890123456789012345678901234567890"
+    assert calls == [("http://rpc.test", 31337)]
+    assert not db_path.parent.exists()
+
+
 def test_main_prints_stable_json(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     from invoiceops import demo_state
 
@@ -166,6 +206,10 @@ def test_main_prints_stable_json(monkeypatch: pytest.MonkeyPatch, capsys) -> Non
             database=demo_state.DatabaseState("var/invoiceops.db", "available", 0, [], []),
             mlflow=demo_state.MlflowState("not_configured", None, [], None),
             evm_tooling=demo_state.EvmToolingState(False, False, False, False),
+            evidence=demo_state.EvidenceState("available", []),
+            evm_runtime=demo_state.EvmRuntimeState(
+                "not_deployed", "http://127.0.0.1:8545", None, None, None, None
+            ),
         ),
     )
 
@@ -180,6 +224,15 @@ def test_main_prints_stable_json(monkeypatch: pytest.MonkeyPatch, capsys) -> Non
             "status": "available",
         },
         "evm_tooling": {"anvil": False, "contracts": False, "forge": False, "web3": False},
+        "evm_runtime": {
+            "anchor_status": None,
+            "batch_id": None,
+            "chain_id": None,
+            "contract_address": None,
+            "rpc_url": "http://127.0.0.1:8545",
+            "status": "not_deployed",
+        },
+        "evidence": {"status": "available", "usable_evaluation_ids": []},
         "mlflow": {
             "champion": None,
             "registered_model_names": [],

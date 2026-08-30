@@ -370,6 +370,14 @@ def anchor_evidence_batch(
         deployment=deployment,
         signer=signer,
     )
+    if submitted.transaction_hash is not None:
+        try:
+            # Anvil may accept a transaction before its receipt is queryable on the next RPC call.
+            web3.eth.wait_for_transaction_receipt(
+                bytes.fromhex(submitted.transaction_hash), timeout=5
+            )
+        except (AttributeError, TimeExhausted, TransactionNotFound, ValueError):
+            pass
     return reconcile_evidence_batch_anchor(db_path, submitted.id, web3)
 
 

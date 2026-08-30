@@ -12,7 +12,20 @@ from urllib.parse import urlsplit, urlunsplit
 from mlflow.exceptions import MlflowException, RestException
 from mlflow.tracking import MlflowClient
 
-from invoiceops.legacy.db import _resolve_db_path
+from invoiceops.anchor import (
+    LOCAL_RPC_URL,
+    AnchorConfigurationError,
+    AnchorError,
+    chain,
+    resolve_deployment,
+)
+from invoiceops.evidence import (
+    EvidenceError,
+    EvidencePersistenceError,
+    get_evidence_batch,
+    list_evaluation_candidates,
+)
+from invoiceops.legacy.db import _resolve_db_path, get_latest_evidence_batch_anchor
 from invoiceops.ml.registry import MODEL_NAME
 
 DISPLAY_ID_LIMIT = 20
@@ -51,10 +64,28 @@ class EvmToolingState:
 
 
 @dataclass(frozen=True)
+class EvidenceState:
+    status: str
+    usable_evaluation_ids: list[int]
+
+
+@dataclass(frozen=True)
+class EvmRuntimeState:
+    status: str
+    rpc_url: str
+    chain_id: int | None
+    contract_address: str | None
+    batch_id: int | None
+    anchor_status: str | None
+
+
+@dataclass(frozen=True)
 class DemoState:
     database: DatabaseState
     mlflow: MlflowState
     evm_tooling: EvmToolingState
+    evidence: EvidenceState
+    evm_runtime: EvmRuntimeState
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -85,21 +116,21 @@ def _sanitize_tracking_uri(tracking_uri: str) -> str:
     return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
 
 
-def _inspect_mlflow() -> MlflowState:
+def _inspect_mlflow() -> tuple[MlflowState, MlflowClient | None]:
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
     if not tracking_uri:
-        return MlflowState("not_configured", None, [], None)
+        return MlflowState("not_configured", None, [], None), None
 
     safe_tracking_uri = _sanitize_tracking_uri(tracking_uri)
     try:
         client = MlflowClient(tracking_uri=tracking_uri)
         models = list(client.search_registered_models())
     except (MlflowException, RestException):
-        return MlflowState("unavailable", safe_tracking_uri, [], None)
+        return MlflowState("unavailable", safe_tracking_uri, [], None), None
 
     model_names = sorted(model.name for model in models)
     if not model_names:
-        return MlflowState("empty", safe_tracking_uri, [], None)
+        return MlflowState("empty", safe_tracking_uri, [], None), client
 
     champion = None
     if MODEL_NAME in model_names:
@@ -109,7 +140,9 @@ def _inspect_mlflow() -> MlflowState:
             pass
         else:
             champion = ChampionState(MODEL_NAME, str(version.version), version.run_id)
-    return MlflowState("available", safe_tracking_uri, model_names[:DISPLAY_ID_LIMIT], champion)
+    return MlflowState(
+        "available", safe_tracking_uri, model_names[:DISPLAY_ID_LIMIT], champion
+    ), client
 
 
 def _inspect_evm_tooling() -> EvmToolingState:
@@ -122,12 +155,70 @@ def _inspect_evm_tooling() -> EvmToolingState:
     )
 
 
+def _inspect_evidence(path: Path, client: MlflowClient | None) -> EvidenceState:
+    if not path.is_file():
+        return EvidenceState("missing_database", [])
+    if client is None:
+        return EvidenceState("mlflow_not_available", [])
+    try:
+        candidates = list_evaluation_candidates(path, client=client)
+    except (sqlite3.Error, EvidenceError, KeyError, IndexError):
+        return EvidenceState("unavailable", [])
+    return EvidenceState("available", [item.evaluation_id for item in candidates if item.usable])
+
+
+def _batch_id_from_environment() -> int | None:
+    value = os.getenv("INVOICEOPS_EVIDENCE_BATCH_ID")
+    if value is None:
+        return None
+    try:
+        batch_id = int(value)
+    except ValueError:
+        return None
+    return batch_id if batch_id > 0 else None
+
+
+def _inspect_evm_runtime(path: Path) -> EvmRuntimeState:
+    rpc_url = os.getenv("INVOICEOPS_EVM_RPC_URL", LOCAL_RPC_URL)
+    batch_id = _batch_id_from_environment()
+    anchor_status = None
+    if batch_id is not None and path.is_file():
+        try:
+            batch = get_evidence_batch(path, batch_id)
+            anchor = get_latest_evidence_batch_anchor(path, batch.id)
+            anchor_status = anchor["status"] if anchor is not None else "missing"
+        except (sqlite3.Error, EvidenceError, EvidencePersistenceError):
+            anchor_status = "unavailable"
+    try:
+        deployment = resolve_deployment()
+    except AnchorConfigurationError:
+        return EvmRuntimeState("not_deployed", rpc_url, None, None, batch_id, anchor_status)
+    try:
+        chain(rpc_url, expected_chain_id=deployment.chain_id)
+    except AnchorError:
+        return EvmRuntimeState(
+            "rpc_unavailable",
+            rpc_url,
+            deployment.chain_id,
+            deployment.address,
+            batch_id,
+            anchor_status,
+        )
+    return EvmRuntimeState(
+        "available", rpc_url, deployment.chain_id, deployment.address, batch_id, anchor_status
+    )
+
+
 def inspect_demo_state() -> DemoState:
     """Return the current classroom state without initializing or changing it."""
+    db_path = _resolve_db_path(None)
+    mlflow, mlflow_client = _inspect_mlflow()
     return DemoState(
-        database=_inspect_database(_resolve_db_path(None)),
-        mlflow=_inspect_mlflow(),
+        database=_inspect_database(db_path),
+        mlflow=mlflow,
         evm_tooling=_inspect_evm_tooling(),
+        evidence=_inspect_evidence(db_path, mlflow_client),
+        evm_runtime=_inspect_evm_runtime(db_path),
     )
 
 
