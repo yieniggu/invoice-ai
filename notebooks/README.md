@@ -1,104 +1,79 @@
-# InvoiceOps notebooks
+# Notebooks de InvoiceOps
 
-Estos notebooks muestran un flujo completo: partir de facturas, entrenar modelos,
-comparar evidencia, registrar una versión aprobada y comprobar qué hace la
-aplicación con ella. Ejecuta los notebooks en orden: cada uno usa el resultado
-del anterior.
+Los notebooks son la ruta didáctica desde datos hasta una evidencia verificable. Ejecutarlos en orden evita mezclar el estado de Tracking, Registry, SQLite y Anvil. Los IDs, versiones y probabilidades son resultados de la ejecución: no los reemplace por valores fijos de ejemplos históricos.
 
-## Inicio rápido
+## Antes de abrir Jupyter
 
-Desde la raíz del proyecto (`invoice-ai`), abre tres terminales.
-
-### Terminal A: MLflow
-
-```bash
-uv run mlflow server \
-  --backend-store-uri sqlite:///var/mlflow.db \
-  --default-artifact-root ./var/mlflow-artifacts \
-  --host 127.0.0.1 \
-  --port 5000
-```
-
-Deja esta terminal abierta. MLflow guarda los experimentos, runs y versiones de
-modelo. Puedes verlo en `http://127.0.0.1:5000`.
-
-### Terminal B: aplicación web
+Desde la raíz del proyecto, prepare únicamente el entorno y el demo aislado indicado abajo. No reutilice SQLite, MLflow, artifacts ni estado de notebook compartidos de otra práctica.
 
 ```bash
 export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
-export INVOICEOPS_DB_PATH=var/invoiceops.db
-export INVOICEOPS_MODE=demo
-
-uv run uvicorn invoiceops.legacy.app:app --host 127.0.0.1 --port 8000
-```
-
-Deja esta terminal abierta. La aplicación se abre en
-`http://127.0.0.1:8000`.
-
-### Terminal C: JupyterLab
-
-```bash
-export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
-export INVOICEOPS_DB_PATH=var/invoiceops.db
-
+export INVOICEOPS_DB_PATH=var/local-demo/invoiceops.db
 uv run jupyter lab
 ```
 
-Abre la URL que muestra JupyterLab y selecciona el kernel **InvoiceOps Python
-3.12**. Las dos variables deben estar presentes antes de abrir el kernel.
+Seleccione el kernel **InvoiceOps Python 3.12**. Si exportó variables después de abrir JupyterLab, reinicie el kernel. La copia de `.env.example` es una escritura de configuración; no incluya secretos reales, claves privadas ni mnemonic en notebooks, outputs o historial de terminal.
 
-## Orden de los notebooks
+## Empezar limpio
 
-| Notebook | Qué haces | Qué aprendes |
-|---|---|---|
-| `01_data_and_baseline.ipynb` | Exploras las facturas y el baseline. | Qué datos existen y por qué un baseline es necesario. |
-| `02_models_and_metrics.ipynb` | Entrenas y comparas modelos. | Cómo interpretar accuracy, precision, recall y otras métricas. |
-| `03_mlflow_and_model_selection.ipynb` | Registras runs en MLflow. | Un run conserva métricas, parámetros y artifacts de un experimento. |
-| `04_registry_gate_and_promotion.ipynb` | Aplicas el Gate y registras versiones. | Un run no es una Model Version; `champion` es un alias que puede moverse. |
-| `05_serving_policy_and_audit.ipynb` | Cargas `champion`, predices y auditas. | Modelo, Policy y auditoría son responsabilidades diferentes. |
-| `06_class_03_continuity_and_demo_state.ipynb` | Inspeccionas y verificas el estado acumulado de Clase 2 y Clase 3. | Clase 3 usa la SQLite y MLflow canónicos; evidencia, proofs, batch y anchor se revalidan sin writes. |
-
-## Qué comprobar al avanzar
-
-- Después de **03**, revisa los runs en:
-  `http://127.0.0.1:5000/#/experiments/1`
-- Después de **04**, revisa el Model Registry global en:
-  `http://127.0.0.1:5000/#/models`
-- Después de **05**, abre `INV-10029` e `INV-10030` en la aplicación. Verás
-  sus features y las evaluaciones que dejó el notebook.
-
-## Conceptos clave
-
-| Concepto | Significa |
-|---|---|
-| **Run** | Una ejecución de entrenamiento con sus métricas, parámetros y artifacts. |
-| **Model Version** | Una versión registrada a partir de un run que aprobó el Gate. |
-| **Gate** | Comprueba la calidad del modelo antes de permitir su registro. |
-| **Champion** | Alias que señala la versión aprobada actualmente. |
-| **Policy** | Regla de negocio que transforma una probabilidad en una recomendación. |
-| **Auditoría** | Evidencia de qué modelo, versión, probabilidad y Policy participaron. |
-
-## Si algo no aparece
-
-1. Comprueba que MLflow sigue abierto en `http://127.0.0.1:5000`.
-2. Confirma que JupyterLab y la aplicación tienen las mismas variables
-   `MLFLOW_TRACKING_URI` e `INVOICEOPS_DB_PATH`.
-3. Reinicia el kernel de Jupyter si abriste JupyterLab antes de exportar las
-   variables.
-4. Vuelve al notebook anterior: no continúes con 04 sin ejecutar 03, ni con 05
-   sin terminar 04.
-
-> No ejecutes el reset durante una actividad en curso: borra las facturas,
-> decisiones y auditorías locales del laboratorio.
-
-## Continuidad hacia Clase 3
-
-Ejecuta el Notebook 06 antes de los tickets de Evidence/Merkle/Blockchain. Importa el inspector real `invoiceops.demo_state` y no modifica el laboratorio. Puedes comprobar el mismo resultado fuera de Jupyter:
+Use un entorno aislado si sus pruebas locales están mezcladas. Cierre MLflow, Portal y kernels que usen ese directorio antes de resetearlo.
 
 ```bash
-INVOICEOPS_DB_PATH=var/invoiceops.db \
-MLFLOW_TRACKING_URI=http://127.0.0.1:5000 \
-uv run python -m invoiceops.demo_state
+uv run python scripts/reset_demo.py --demo-root var/local-demo
+uv run python scripts/bootstrap_local_demo.py --initialize-demo-root
+uv run python scripts/reset_demo.py --demo-root var/local-demo --confirm-reset-local-demo
+uv run mlflow server \
+  --backend-store-uri sqlite:///var/local-demo/mlflow.db \
+  --default-artifact-root ./var/local-demo/mlflow-artifacts \
+  --host 127.0.0.1 --port 5000
 ```
 
-Si no hay evaluaciones, runs o `champion`, vuelve al flujo explícito de Clase 2. Para el cierre de Clase 3, el Notebook 06 también usa `verify_evidence_batch` y un tamper exclusivamente in-memory; el root EVM solo es válido si cada check del resultado es `true`. `var/t23_5_demo/` es solo estado técnico histórico de notebooks y no debe usarse como fuente canónica. Consulta el [runbook de continuidad de Clase 3](../docs/class-03-continuity-runbook.md) para el procedimiento completo.
+El primer comando es un **dry run** y lista exactamente las rutas. El segundo crea o reutiliza el marcador de propiedad; el tercero es irreversible y elimina solo `invoiceops.db`, `invoiceops.db-shm`, `invoiceops.db-wal`, `mlflow.db`, `mlflow-artifacts/`, `notebook-state/state.json` y el dataset canónico `data/invoice-risk-v1` dentro de `var/local-demo`. El reset confirmado recrea SQLite; el bootstrap posterior recrea el dataset aislado. Acepta exclusivamente esa raíz canónica marcada por InvoiceOps y rechaza cualquier otra ruta, contenido ajeno o enlace simbólico. No toca código, servicios remotos ni secretos.
+
+En otra terminal, complete el bootstrap y la ruta didáctica:
+
+```bash
+export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
+export INVOICEOPS_DB_PATH=var/local-demo/invoiceops.db
+uv run python scripts/bootstrap_local_demo.py --db-path var/local-demo/invoiceops.db
+uv run jupyter lab
+```
+
+Ejecute 03, 04 y 05 con esas variables. En 06, la tabla muestra IDs `USABLE`; copie uno explícitamente en `EVALUATION_ID`. Cree el batch en Portal cuando esa actividad esté autorizada, copie su ID en `BATCH_ID` y continúe. La selección vacía, inválida o incompleta muestra una omisión sin traceback. El resultado esperado antes de Anvil es una evaluación visible, un Evidence Record y un batch explícito; los checks E2E quedan `PENDING` hasta anclar el root.
+
+## Orden y propósito
+
+| Orden | Notebook didáctico | Qué hace | Equivalente técnico |
+|---:|---|---|---|
+| 01 | `01_data_and_baseline.ipynb` | Genera/reutiliza el dataset sintético, explica splits temporales y baseline. | `uv run python scripts/generate_synthetic_dataset.py --seed 20260826 --rows 12000 --version invoice-risk-v1` (escribe dataset). |
+| 02 | `02_models_and_metrics.ipynb` | Compara Dummy, Logistic y Random Forest sobre validation. | No es un comando de operación: usa un dataset temporal para la explicación. |
+| 03 | `03_mlflow_and_model_selection.ipynb` | Consulta/reutiliza o crea runs de `invoice-risk`; compara evidencia para selección humana. | `uv run python -m invoiceops.ml.train --model dummy|logistic|random_forest` (escribe run MLflow). |
+| 04 | `04_registry_gate_and_promotion.ipynb` | Aplica Gate, registra versiones y mueve `champion` explícitamente. | `invoiceops.ml.gate`, `invoiceops.ml.registry register` y `promote` (Registry). |
+| 05 | `05_serving_policy_and_audit.ipynb` | Arranca una API didáctica local, comprueba health, predice, aplica Policy y persiste auditoría. | Model API en `:8001`, Portal y `POST /predict`; Registry/SQLite en celdas marcadas. |
+| 06 | `06_class_03_continuity_and_demo_state.ipynb` | Inspecciona continuidad y explica Evidence, Merkle, anchor y verificación. | `invoiceops.demo_state`, `invoiceops.evidence`, `invoiceops.anchor` y `invoiceops.verification`. |
+
+Los notebooks 03 a 05 son la clase de MLOps: un run no es una Model Version, un Gate no es promotion y mover `champion` no recarga una API ya iniciada. Tras cualquier promotion, reinicie Model API y confirme `GET /health` antes de persistir una evaluación nueva.
+
+## Clase 3 y efectos laterales
+
+Notebook 06 distingue visualmente lecturas, escrituras SQLite, cambios de manifest y transacciones Anvil. Para el cierre de la clase, el recorrido operativo completo está en el [runbook de Clase 3](../docs/class-03-continuity-runbook.md):
+
+1. Inspeccione estado con `invoiceops.demo_state` (solo lectura).
+2. Liste y persista Evidence Records verificables.
+3. En el Portal, cree un batch inicial con 2+ evidencias y un sucesor acumulativo con 1+ evidencia nueva.
+4. Lea batch y proof; confirme el árbol y su root.
+5. Inicie Anvil `31337`, despliegue una vez y use preflight/confirmación o el CLI de anchor.
+6. Verifique end-to-end desde Evidence Record hasta root on-chain.
+
+La celda de batch de Notebook 06 conserva el caso didáctico de una hoja para explicar que una hoja puede ser su propio root. Para el flujo de Portal requerido en la práctica final, use dos o más Evidence Records en el batch inicial. El sucesor acumulativo se crea en la UI **Create successor**; la CLI actual no expone un subcomando para sucesores, por lo que no debe simularse creando un batch independiente.
+
+## Comprobaciones visibles
+
+- Después de 03: `http://127.0.0.1:5000/#/experiments/1` muestra runs, métricas, parámetros y artifacts.
+- Después de 04: `http://127.0.0.1:5000/#/models` muestra `invoice-review`, sus versiones y el alias `champion`.
+- Después de 05: la API didáctica local identifica modelo, versión y run; la auditoría se conserva en `var/local-demo/invoiceops.db`.
+- Después de Clase 3: la verificación final solo es válida cuando todos los checks, incluido `root_on_chain`, son verdaderos.
+
+## Artefactos generados
+
+Los notebooks fuente son la única ruta estudiantil y la autoridad. No se distribuyen HTML o PDF como contingencia: cualquier render futuro debe generarse desde el notebook correspondiente en una tarea controlada y verificada, nunca editarse a mano.

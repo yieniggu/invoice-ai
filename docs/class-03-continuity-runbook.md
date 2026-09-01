@@ -1,46 +1,61 @@
-# Clase 3: continuidad del estado de demostración
+# Clase 3: Evidence, Merkle, Anvil y verificación end-to-end
 
 Clase 3 reutiliza el estado operacional de Clase 2. Antes de crear evidencia verificable, inspecciona ese estado con el módulo read-only `invoiceops.demo_state`; no crees una SQLite, backend MLflow o flujo paralelo para esta clase.
 
 ## Ruta rápida
 
-1. Prepara el laboratorio de Clase 2 siguiendo el [README](../README.md#levantar-el-laboratorio-desde-cero) si la SQLite canónica no existe o no contiene evaluaciones.
+1. Prepara el laboratorio de Clase 2 siguiendo la [Ruta rápida del README](../README.md#ruta-rápida) si la SQLite canónica no existe o no contiene evaluaciones.
 2. Exporta las variables de la sesión antes de iniciar el kernel o la terminal que inspeccionará el estado.
 3. Ejecuta el inspector y usa los IDs que muestra, sin asumir valores fijos.
 
 ```bash
-export INVOICEOPS_DB_PATH=var/invoiceops.db
+export INVOICEOPS_DB_PATH=var/local-demo/invoiceops.db
 export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
 uv run python -m invoiceops.demo_state
 ```
 
-El comando produce JSON estable, legible y sin credenciales en `tracking_uri`. No ejecuta init, seed, migraciones, registro ni promotion.
+El comando produce JSON estable, legible y sin credenciales en `tracking_uri`. No ejecuta init, seed, migraciones, registro ni promotion: es **solo lectura**.
+
+## Mapa de efectos laterales
+
+| Clase de acción | Comandos o UX | Efecto |
+|---|---|---|
+| Solo lectura | `demo_state`, `evidence list/records/get/hash/verify/compare/batch-get/proof`, `anchor query/status/batch-status`, `verification` | Lee SQLite, MLflow o RPC; no crea records, batches ni transacciones. |
+| Escritura SQLite | `evidence persist`, `evidence batch`, backfill sin `--dry-run`, Portal al crear Evidence Record/batch/sucesor | Persiste evidencia, metadata canónica, batch/proofs o relaciones. |
+| Escritura MLflow | Bootstrap, entrenamiento, Registry/promotion | Crea/reutiliza runs, versiones o aliases. Reinicie Model API después de promotion. |
+| Deployment/transacción Anvil | `anchor deploy`, `anchor register`, `anchor batch-anchor`, confirmación web | `deploy` modifica el manifest; `register`/`batch-anchor` transmiten un root local. |
+| Destructiva | reset confirmado, borrar SQLite/MLflow/artifacts | Fuera de la ruta de Clase 3. |
+
+Nunca documente, pegue o imprima secretos, claves privadas o mnemonic. El cliente usa la primera cuenta desbloqueada del Anvil local; no recibe una clave privada.
 
 ## Estado canónico
 
 | Componente | Fuente canónica | Uso en Clase 3 |
 |---|---|---|
-| SQLite operacional | `INVOICEOPS_DB_PATH`, o `var/invoiceops.db` por defecto | Lee `model_evaluations`, sus IDs y `run_id` asociados. |
+| SQLite operacional | `INVOICEOPS_DB_PATH`, configurada como `var/local-demo/invoiceops.db` en la ruta aislada | Lee `model_evaluations`, sus IDs y `run_id` asociados. |
 | MLflow Tracking y Registry | `MLFLOW_TRACKING_URI` | Comprueba modelos registrados y el alias `champion` cuando la URI está configurada. |
 | Portal y Policy | Aplicación existente de InvoiceOps | Siguen siendo responsables de decisión y auditoría; este inspector no los modifica. |
 | Herramientas EVM | Ejecutables locales, paquete Python `web3` y directorio `contracts/` | Solo informa su disponibilidad para tickets posteriores. |
 
-`var/t23_5_demo/` es estado técnico histórico de los notebooks 04 y 05. No es una SQLite operacional, backend MLflow ni fuente canónica para Clase 3.
+`var/local-demo/` contiene el estado local aislado de la demostración: SQLite, MLflow, artifacts, estado auxiliar y el dataset canónico en `data/invoice-risk-v1`. No es una fuente compartida ni remota. El estado técnico histórico de 04/05 ya no se usa como estado compartido.
 
 ## Preparar una demostración con datos
 
 Si `database.status` es `missing` o `model_evaluation_count` es `0`, prepara Clase 2 de forma explícita. El reset es destructivo y local; úsalo solo cuando corresponda a la actividad docente.
 
 ```bash
-INVOICEOPS_MODE=demo INVOICEOPS_DB_PATH=var/invoiceops.db uv run python scripts/reset_demo.py --confirm
+uv run python scripts/reset_demo.py --demo-root var/local-demo
+# Tras revisar el dry run:
+uv run python scripts/bootstrap_local_demo.py --initialize-demo-root
+uv run python scripts/reset_demo.py --demo-root var/local-demo --confirm-reset-local-demo
 uv run mlflow server \
-  --backend-store-uri sqlite:///var/mlflow.db \
-  --default-artifact-root ./var/mlflow-artifacts \
+  --backend-store-uri sqlite:///var/local-demo/mlflow.db \
+  --default-artifact-root ./var/local-demo/mlflow-artifacts \
   --host 127.0.0.1 \
   --port 5000
 ```
 
-En otra terminal, exporta `MLFLOW_TRACKING_URI=http://127.0.0.1:5000`, completa los notebooks 03, 04 y 05 en orden y vuelve a ejecutar el inspector. La secuencia crea runs, registra una versión, promueve `champion` mediante una decisión explícita y persiste `model_evaluations` en la misma SQLite operacional.
+El reset confirmado elimina `invoiceops.db`, sus WAL/SHM, `mlflow.db`, `mlflow-artifacts/`, `notebook-state/state.json` y el dataset canónico `data/invoice-risk-v1` bajo `var/local-demo`; recrea SQLite. En otra terminal, exporta `MLFLOW_TRACKING_URI=http://127.0.0.1:5000` e `INVOICEOPS_DB_PATH=var/local-demo/invoiceops.db`, ejecuta `uv run python scripts/bootstrap_local_demo.py` para recrear el dataset aislado, completa los notebooks 03, 04 y 05 en orden y vuelve a ejecutar el inspector. La secuencia crea runs, registra una versión, promueve `champion` mediante una decisión explícita y persiste `model_evaluations` en la misma SQLite operacional. El marcador de la raíz solo autoriza el reset de ese demo local; no contiene secretos.
 
 ## Interpretar el inspector
 
@@ -53,7 +68,7 @@ En otra terminal, exporta `MLFLOW_TRACKING_URI=http://127.0.0.1:5000`, completa 
 | `mlflow.status: empty` | El Registry no tiene modelos registrados. | Vuelve al flujo de Registry de Clase 2 si se necesita un champion. |
 | `mlflow.status: available`, `champion: null` | MLflow está disponible, pero no hay alias `champion`. | Es válido; promotion sigue siendo una decisión explícita. |
 
-## Notebook docente
+## Notebook docente y CLI equivalente
 
 Abre `notebooks/06_class_03_continuity_and_demo_state.ipynb` después de configurar el kernel. Su primera celda llama a `inspect_demo_state()` para confirmar el estado sin mutarlo. Las celdas de C3-T01/C3-T02 usan las APIs públicas de `invoiceops.evidence`: listan evaluaciones utilizables, construyen `invoice-evidence-v1` desde la evaluación canónica y su run MLflow, y persisten una sola evidencia por evaluación. C3-T02 serializa el contenido lógico como JSON UTF-8 canónico versionado y calcula Keccak-256 compatible con Ethereum, no SHA3-256 NIST. El digest hexadecimal es en minúsculas y no incluye el prefijo `0x`. No duplican SQL, canonicalización, criptografía ni inventan lineage.
 
@@ -67,15 +82,24 @@ uv run python -m invoiceops.evidence get --db "$INVOICEOPS_DB_PATH" --evaluation
 uv run python -m invoiceops.evidence hash --db "$INVOICEOPS_DB_PATH" --evaluation-id 1
 uv run python -m invoiceops.evidence verify --db "$INVOICEOPS_DB_PATH" --evaluation-id 1
 uv run python -m invoiceops.evidence compare --db "$INVOICEOPS_DB_PATH" --evaluation-id 1 --field reason --value altered
-uv run python -m invoiceops.evidence batch --db "$INVOICEOPS_DB_PATH" --evaluation-id 1 --evaluation-id 2
+uv run python -m invoiceops.evidence batch --db "$INVOICEOPS_DB_PATH" --evaluation-id EVALUATION_ID_1 --evaluation-id EVALUATION_ID_2
+uv run python -m invoiceops.evidence batch-get --db "$INVOICEOPS_DB_PATH" --batch-id BATCH_ID
 uv run python -m invoiceops.evidence proof --db "$INVOICEOPS_DB_PATH" --batch-id 1 --evaluation-id 1
 ```
 
-`hash` devuelve el algoritmo, versión canónica y digest del registro persistido. `verify` reproduce el payload canónico desde `evidence_json` y compara payload y digest persistidos. `compare` modifica solo una copia en memoria y devuelve `tampered: true`; no escribe SQLite. Sustituye `1` por un ID realmente listado. Si falta `run_id` o alguno de los tres campos de provenance, `list` lo marca no utilizable con una causa explícita y `build`/`persist` fallan sin escribir evidencia parcial.
+`build`, `get`, `hash`, `verify`, `compare`, `batch-get` y `proof` son lecturas; `persist` y `batch` escriben SQLite. `hash` devuelve algoritmo, versión canónica y digest del registro persistido. `verify` reproduce el payload canónico desde `evidence_json` y compara payload y digest persistidos. `compare` modifica solo una copia en memoria y devuelve `tampered: true`; no escribe SQLite. Sustituye los marcadores por IDs realmente listados. Si falta `run_id` o alguno de los tres campos de provenance, `list` lo marca no utilizable con una causa explícita y `build`/`persist` fallan sin escribir evidencia parcial.
 
 ## Batches Merkle y proofs
 
 `batch` exige una selección explícita de `--evaluation-id`; no existe un modo que incluya todas las evidencias. Cada ID debe ser único y corresponder a un Evidence Record `invoice-evidence-v1` persistido y verificable. La selección se guarda por `evaluation_id` ascendente, aunque los argumentos lleguen en otro orden. Si un ID no existe, se repite, no tiene evidencia persistida o su digest no verifica, la operación falla sin crear un batch parcial.
+
+Para la práctica final, el **batch inicial debe contener 2+ evidencias**. En Portal abra **Evidence Batches**, seleccione los records verificados y cree el batch; la vista muestra hojas, proofs, root y árbol visual. Aunque el motor admite un batch de una hoja para explicar el caso base, no lo use como evidencia de la práctica final.
+
+### Sucesor acumulativo
+
+Abra un batch en Portal y use **Create successor**. Seleccione **1+ Evidence Records nuevos**: el sucesor incorpora todas las evidencias del origen, agrega las seleccionadas, genera otro root y guarda el enlace origen/sucesor. El batch de origen, sus proofs y su anchor no cambian; una evidencia ya incluida queda excluida de la selección. El historial y enlaces entre batches aparecen en la vista del batch y en el detalle de la factura.
+
+La CLI actual no tiene `batch-successor`. No sustituya el sucesor por `evidence batch` con una lista reconstruida: crearía un batch sin lineage. La interfaz técnica existente es la API Python `create_evidence_batch_successor(db_path, source_batch_id, new_evaluation_ids)`, pero para la clase use la UX del Portal.
 
 La política `invoice-merkle-v1` usa exactamente los 32 bytes de `digest_hex` como hoja, sin recanonicalizar ni rehashear la evidencia. Para nodos internos calcula `keccak256(left_bytes || right_bytes)`; una hoja tiene como root su mismo digest y, si un nivel es impar, duplica su última hoja. Las proofs guardan la orientación explícita `left` o `right` junto al hash hermano.
 
@@ -89,7 +113,7 @@ el estado del deployment/RPC EVM y, opcionalmente, el anchor del batch elegido.
 No crea SQLite, migraciones, servicios, contratos ni transacciones.
 
 ```bash
-export INVOICEOPS_DB_PATH=var/invoiceops.db
+export INVOICEOPS_DB_PATH=var/local-demo/invoiceops.db
 export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
 export INVOICEOPS_EVIDENCE_BATCH_ID=BATCH_ID # opcional
 uv run python -m invoiceops.demo_state
@@ -125,12 +149,8 @@ registrado o un RPC inaccesible da `valid: false` sin false positive.
 Para demostrar tampering, usa una copia en memoria: `compare_evidence_records`
 debe devolver `true` para la copia alterada. No edites SQLite para simular una
 demostración. El Notebook 06 invoca tanto esta API como esa comparación; ejecútalo
-manualmente con el laboratorio validado. Su render generado está en
-`notebooks/rendered/06_class_03_continuity_and_demo_state.html`: conserva la
-salida real del preflight, la verificación end-to-end y la detección de tampering
-en memoria. Regénéralo ejecutando el notebook 06 solo después de completar el
-laboratorio validado y cuando cambien sus celdas, datos de demostración o salida
-observable; no edites el HTML manualmente.
+manualmente con el laboratorio validado. El notebook fuente y este runbook son
+la autoridad; no hay HTML renderizado como contingencia en la ruta estudiantil.
 
 Fallback: si `evm_runtime.status` no es `available`, conserva el resultado
 inválido, corrige el único runtime local existente y vuelve a ejecutar solo la
@@ -145,33 +165,24 @@ la comprobación read-only.
 - MLflow en ejecución solo si se configura `MLFLOW_TRACKING_URI`.
 - Foundry (`forge` y `anvil`), `web3` y `contracts/` son necesarios solo para confirmar el root EVM de C3-T06; el inspector y la verificación no los inician ni despliegan.
 
-## C3-T04: local EVM root anchoring
+## C3-T04: anchor local del root
 
-The canonical local EVM runtime is Foundry Anvil on chain ID `31337`. Start it
-in a dedicated terminal and keep it local to the teaching environment:
+El único runtime EVM permitido es Foundry Anvil local con chain ID `31337`. Inícielo en una terminal dedicada:
 
 ```bash
 anvil --chain-id 31337
 ```
 
-The only deployment configuration is the versioned
-`contracts/deployments/local.json` manifest. It starts with `address: null`.
-Deploying uses the first unlocked Anvil account, writes the resulting address
-and signer to that manifest, and never requires parsing console output:
+La única configuración de deployment es el manifest versionado `contracts/deployments/local.json`. Un manifest sin dirección requiere deployment. El deployment usa la primera cuenta desbloqueada de Anvil y escribe la dirección y signer en el manifest; no requiere interpretar salida de consola:
 
 ```bash
 forge test --root contracts
 uv run python -m invoiceops.anchor deploy
 ```
 
-Do not add a private key to this repository, a notebook, or a command history.
-The Python API uses Anvil's unlocked local account. The deploy command fails
-explicitly when Anvil, the expected chain ID, Forge, or the manifest are not
-available.
+`forge test` es solo lectura respecto de la cadena; `anchor deploy` escribe el manifest. El comando falla explícitamente si falta Anvil, chain ID `31337`, Forge o el manifest. No agregue claves privadas al repositorio, notebook o historial.
 
-Anchor only a root returned by `get_evidence_batch(...).root_hash`; do not
-rebuild its Merkle tree. After deployment, the CLI delegates all work to
-`invoiceops.anchor`:
+Ancle solo un `root_hash` devuelto por `get_evidence_batch(...).root_hash`; no reconstruya el árbol. Tras deployment:
 
 ```bash
 uv run python -m invoiceops.anchor register --root-hash ROOT_HASH
@@ -179,11 +190,7 @@ uv run python -m invoiceops.anchor query --root-hash ROOT_HASH
 uv run python -m invoiceops.anchor status --root-hash ROOT_HASH
 ```
 
-`register` is idempotent at the CLI level: it first queries the contract and
-does not submit a duplicate transaction. Direct duplicate contract calls
-revert. The chain stores only the 32-byte root and emits `RootRegistered`; it
-does not store Evidence Records, Merkle proofs, ML artifacts, policy data, or
-operational SQLite state.
+`query` y `status` son solo lectura. `register` primero consulta y no envía un duplicado; una llamada directa duplicada revierte. La cadena guarda únicamente el root de 32 bytes y emite `RootRegistered`; no guarda Evidence Records, proofs, ML artifacts, decisiones de Policy o SQLite.
 
 ## C3-T05: persistent batch anchoring and recovery
 
@@ -197,7 +204,7 @@ uv run python -c 'from invoiceops.legacy.db import run_migrations; run_migration
 uv run python -m invoiceops.anchor batch-anchor --db "$INVOICEOPS_DB_PATH" --batch-id BATCH_ID
 ```
 
-`batch-anchor` resolves the deployment manifest, uses Anvil's unlocked local
+`batch-anchor` es una escritura SQLite y una posible transacción: resuelve el manifest, usa Anvil desbloqueado y
 account, submits the persisted root once, immediately stores the transaction
 hash as `submitted`, and then reconciles the receipt. Normally, a verified
 result records the chain ID, contract address, transaction hash, block number,
@@ -216,16 +223,16 @@ uv run python -m invoiceops.anchor batch-status --db "$INVOICEOPS_DB_PATH" --anc
 uv run python -m invoiceops.anchor batch-reconcile --db "$INVOICEOPS_DB_PATH" --anchor-id ANCHOR_ID
 ```
 
-If Anvil accepted the transaction but the process or RPC failed before SQLite
-persisted `transaction_hash`, the reserved anchor remains `ambiguous` with no
-hash. Run the same `batch-reconcile` command after the RPC is available. It
-may confirm that the reserved root exists with `isRootRegistered`, but that is
-not a canonical receipt and it must leave the anchor `ambiguous`. Recover the
-transaction identity and its complete receipt, including `RootRegistered`,
-before recording `verified`. Never run `batch-anchor` again for that `batch_id`:
-the unique reservation prevents a second submit.
+Si Anvil aceptó la transacción pero el proceso o RPC falló antes de que SQLite
+persistiera `transaction_hash`, el anchor reservado queda `ambiguous` sin hash.
+Ejecute el mismo `batch-reconcile` cuando RPC esté disponible. Puede confirmar
+que el root reservado existe con `isRootRegistered`, pero eso no es un receipt
+canónico y debe permanecer `ambiguous`. Recupere identidad de transacción y
+receipt completo, incluido `RootRegistered`, antes de registrar `verified`.
+Nunca ejecute `batch-anchor` otra vez para ese `batch_id`: la reserva única
+impide un segundo envío.
 
-Reconciliation reads the transaction receipt and validates `RootRegistered` when
+`batch-status` es solo lectura. `batch-reconcile` puede escribir el lifecycle SQLite pero nunca envía una transacción. La reconciliación lee el receipt y valida `RootRegistered` cuando
 the provider exposes decoded events. A reverted receipt is `failed`, even when
 the root already exists on-chain from another transaction; retain that original
 transaction hash, block number, and gas used for diagnosis. It never sends a
@@ -245,7 +252,7 @@ persisten completos y el backfill será un no-op. Desde una SQLite de Clase 2,
 primero aplica las migraciones actuales y sigue el mismo flujo:
 
 ```bash
-export INVOICEOPS_DB_PATH=var/invoiceops.db
+export INVOICEOPS_DB_PATH=var/local-demo/invoiceops.db
 uv run python -c 'from invoiceops.legacy.db import run_migrations; run_migrations()'
 ```
 

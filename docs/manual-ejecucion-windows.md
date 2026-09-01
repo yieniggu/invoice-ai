@@ -12,8 +12,8 @@ Al terminar cualquiera de los dos métodos podrá abrir la pantalla de acceso de
 |---|---|
 | Acceso local | `http://127.0.0.1:8000/login` |
 | Acceso con Docker | `http://localhost:8000/login` |
-| Usuario demo | `analyst` |
-| Contraseña demo | `demo-password` |
+| Credenciales demo con `uv` | Las variables del proceso local; `.env` aplica solo a este modo local. |
+| Credenciales demo con Docker Compose | `analyst` / `demo-password`, fijadas en `compose.yml`; Compose no consume `.env` para estas variables. |
 | Salud | `/api/health` |
 
 ## Antes de empezar
@@ -34,6 +34,8 @@ Get-ChildItem
 
 **Qué debe observar:** la ruta mostrada termina en `invoice-ai` y en la lista aparece el archivo `README.md`.
 
+> No copie, imprima ni suba secretos, claves privadas o mnemonic. Las credenciales demo no son secretos reales: el Portal local iniciado con `uv` toma sus variables del entorno local, mientras Docker Compose usa los valores demo fijados en `compose.yml`.
+
 ## Método 1: ejecución local
 
 Use este método para ejecutar la aplicación directamente en Windows.
@@ -44,6 +46,7 @@ En PowerShell, desde `invoice-ai`, ejecute:
 
 ```powershell
 uv sync --all-groups
+Copy-Item .env.example .env
 ```
 
 Espere a que el comando termine y vuelva a aparecer el indicador de PowerShell.
@@ -65,12 +68,13 @@ uv run playwright install chromium
 Ejecute este bloque antes de abrir el portal si necesita partir con las ocho facturas de demostración y sin decisiones ni auditorías anteriores:
 
 ```powershell
-$env:INVOICEOPS_MODE = "demo"
-$env:INVOICEOPS_DB_PATH = "var/invoiceops.db"
-uv run python scripts/reset_demo.py --confirm
+uv run python scripts/reset_demo.py --demo-root var/local-demo
+# Solo después de revisar el dry run:
+uv run python scripts/bootstrap_local_demo.py --initialize-demo-root
+uv run python scripts/reset_demo.py --demo-root var/local-demo --confirm-reset-local-demo
 ```
 
-> **Advertencia: reset destructivo local.** Este comando borra permanentemente las facturas, decisiones y `model_evaluations` de la SQLite indicada por `INVOICEOPS_DB_PATH`, y luego vuelve a sembrar las facturas de demostración. Úselo solo con datos locales de este laboratorio, nunca con datos reales, de producción o cloud.
+> **Advertencia: reset destructivo local.** La confirmación elimina `invoiceops.db`, `invoiceops.db-shm`, `invoiceops.db-wal`, `mlflow.db`, `mlflow-artifacts/`, `notebook-state/state.json` y el dataset canónico `data/invoice-risk-v1` bajo `var/local-demo`; recrea SQLite. Ejecute bootstrap después para recrear el dataset aislado. Úselo solo con datos locales de este laboratorio, nunca con datos reales, de producción o cloud.
 
 **Qué debe observar:** el comando informa la ruta de la base reiniciada y muestra ocho facturas. No lo ejecute durante una actividad cuya auditoría quiera conservar.
 
@@ -80,7 +84,7 @@ En PowerShell, la variable de entorno se define antes de ejecutar el servidor. C
 
 ```powershell
 $env:INVOICEOPS_MODE = "demo"
-$env:INVOICEOPS_DB_PATH = "var/invoiceops.db"
+$env:INVOICEOPS_DB_PATH = "var/local-demo/invoiceops.db"
 uv run uvicorn invoiceops.legacy.app:app --host 127.0.0.1 --port 8000
 ```
 
@@ -92,7 +96,7 @@ No cierre esta ventana de PowerShell mientras use InvoiceOps.
 
 1. Abra un navegador web.
 2. Escriba `http://127.0.0.1:8000/login` en la barra de direcciones.
-3. Ingrese `analyst` como usuario y `demo-password` como contraseña.
+3. Ingrese las credenciales demo correspondientes a las variables del entorno del Portal local.
 4. Seleccione el botón para iniciar sesión.
 
 **Qué debe observar:** aparece el portal de facturas después de iniciar sesión. Si vuelve a ver la pantalla de acceso, revise que las credenciales se hayan escrito exactamente como se muestran.
@@ -119,7 +123,7 @@ Control + C
 
 ### Variable de entorno opcional: otra base de datos local
 
-Por defecto, InvoiceOps usa `var/invoiceops.db`. En PowerShell, asigne cada variable con `$env:` antes de iniciar el servidor:
+La configuración local de ejemplo usa `var/local-demo/invoiceops.db`. En PowerShell, asigne cada variable con `$env:` antes de iniciar el servidor:
 
 ```powershell
 $env:INVOICEOPS_DB_PATH = "$HOME\Desktop\invoiceops-prueba.db"
@@ -137,7 +141,7 @@ Remove-Item Env:INVOICEOPS_DB_PATH
 
 ### Usar el flujo MLOps con el portal
 
-El portal no llama al Model API. Notebook 05 escribe `model_evaluations` directamente en la SQLite operacional; para ver esas auditorías en el portal, ambos procesos deben usar exactamente `INVOICEOPS_DB_PATH=var/invoiceops.db`.
+El portal puede generar una evaluación ML. Defina `INVOICEOPS_MODEL_API_URL` con la URL del Model API (por ejemplo, `http://127.0.0.1:8001`) al iniciar el portal o en `.env` en la raíz del proyecto. **Generate model evaluation** llama a `/predict`, aplica la Policy y guarda `model_evaluations`; Rule v1 y la decisión final permanecen separados.
 
 La primera vez, registre el kernel que usarán los notebooks:
 
@@ -149,28 +153,37 @@ Abra tres ventanas de PowerShell desde `invoice-ai` después de ejecutar el rese
 
 ```powershell
 # Terminal A: MLflow compartido
-uv run mlflow server --backend-store-uri sqlite:///var/mlflow.db --default-artifact-root ./var/mlflow-artifacts --host 127.0.0.1 --port 5000
+uv run mlflow server --backend-store-uri sqlite:///var/local-demo/mlflow.db --default-artifact-root ./var/local-demo/mlflow-artifacts --host 127.0.0.1 --port 5000
 ```
 
 ```powershell
-# Terminal B: portal con la SQLite operacional compartida
+# Terminal B: Model API; reinícielo después de una promotion.
+$env:MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
+uv run uvicorn invoiceops.model_api.app:app --host 127.0.0.1 --port 8001
+```
+
+```powershell
+# Terminal C: Portal con SQLite y Model API compartidos.
 $env:INVOICEOPS_MODE = "demo"
-$env:INVOICEOPS_DB_PATH = "var/invoiceops.db"
+$env:INVOICEOPS_DB_PATH = "var/local-demo/invoiceops.db"
+$env:INVOICEOPS_MODEL_API_URL = "http://127.0.0.1:8001"
 uv run uvicorn invoiceops.legacy.app:app --host 127.0.0.1 --port 8000
 ```
 
 ```powershell
-# Terminal C: JupyterLab con MLflow y la SQLite compartidos
+# Terminal D: JupyterLab con MLflow y la SQLite compartidos
 $env:MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
-$env:INVOICEOPS_DB_PATH = "var/invoiceops.db"
+$env:INVOICEOPS_DB_PATH = "var/local-demo/invoiceops.db"
 uv run jupyter lab
 ```
 
-Abra la URL tokenizada de JupyterLab, seleccione el kernel **InvoiceOps Python 3.12** y ejecute los notebooks en orden `01 -> 02 -> 03 -> 04 -> 05`. MLflow es el único backend de Tracking y Registry; no inicie un segundo servidor. Consulte `INV-10029` o `INV-10030` en el portal tras Notebook 05. Para el flujo docente y la recuperación, use el [runbook de Clase 2](class-02-mlops-runbook.md).
+Compruebe `Invoke-RestMethod http://127.0.0.1:8001/health` y `Invoke-RestMethod http://127.0.0.1:8000/api/health`. Abra JupyterLab, seleccione **InvoiceOps Python 3.12** y ejecute `01 -> 02 -> 03 -> 04 -> 05 -> 06`. Después de 05, continúe con Evidence Batches: inicial 2+, sucesor acumulativo 1+ y anchor Anvil `31337` en dos pasos. Consulte el [runbook de Clase 2](class-02-mlops-runbook.md) y el [de Clase 3](class-03-continuity-runbook.md); no inicie un segundo MLflow/Anvil.
 
 ## Método 2: ejecución con Docker
 
 Use este método si prefiere que Docker ejecute la aplicación en un contenedor.
+
+> **Diferencia con el Portal local por `uv`.** Este comando no usa las credenciales de su `.env`: `compose.yml` fija `analyst` / `demo-password` para el contenedor. Esas credenciales son solo de demostración, no secretos reales.
 
 ### 1. Iniciar el contenedor
 
@@ -187,7 +200,7 @@ La primera ejecución puede tardar varios minutos porque Docker crea la imagen.
 ### 2. Abrir y comprobar la aplicación con Docker
 
 1. Abra `http://localhost:8000/login` en el navegador.
-2. Inicie sesión con `analyst` y `demo-password`.
+2. Inicie sesión con `analyst` y `demo-password`, los valores demo fijados por Docker Compose.
 
 **Qué debe observar:** se muestra el portal de facturas. La aplicación se está ejecutando dentro de Docker.
 
@@ -223,6 +236,9 @@ docker compose down -v
 
 | Situación | Qué hacer |
 |---|---|
+| Model API devuelve `503` | Confirme `invoice-review@champion` en MLflow, ejecute bootstrap/Registry y reinicie Model API. |
+| RPC, manifest o deployment falla | Use solo Anvil local `31337`, revise `contracts/deployments/local.json` y despliegue antes de anclar. |
+| Anchor `ambiguous` o `failed` | No reenvíe: use `batch-status` y `batch-reconcile` del runbook de Clase 3. |
 | `uv` o `docker` no se reconoce | Complete la guía de instalación de herramientas de Windows y cierre/abra PowerShell antes de reintentar. |
 | El navegador no abre la página | Confirme que la ventana donde inició Uvicorn o Docker sigue abierta y pruebe la URL indicada para el método elegido. |
 | El puerto 8000 ya está ocupado | Detenga otra ejecución de InvoiceOps con `Control + C` o cierre el proceso que usa ese puerto antes de iniciar de nuevo. |
@@ -232,6 +248,6 @@ docker compose down -v
 ## Lista final de comprobación
 
 - [ ] Pude abrir la URL de acceso del método elegido.
-- [ ] Pude iniciar sesión con `analyst` y `demo-password`.
+- [ ] Pude iniciar sesión con las credenciales demo locales.
 - [ ] Vi el estado `ok` al consultar `/api/health`.
 - [ ] Detuve la aplicación con `Control + C` o `docker compose down`.

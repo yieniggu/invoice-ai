@@ -39,16 +39,30 @@ Al cerrar, cada estudiante debe poder explicar:
 ## Arquitectura real del laboratorio
 
 ```text
-Notebooks 01-03: dataset -> modelos -> MLflow Tracking
+Notebooks 01-03: dataset -> modelos -> MLflow Tracking compartido
                                       |
 Notebook 04: runs -> Gate -> Registry -> challenger/champion
                                       |
                            models:/invoice-review@champion
                                       |
-Notebook 05: Model API -> probability -> ml-policy-v1 -> model_evaluations
+Portal: Rule v1 -> Model API /predict -> probability -> ml-policy-v1 -> model_evaluations
 ```
 
-El portal InvoiceOps de `:8000` conserva Rule v1 y visualiza el historial persistido de `model_evaluations`. **No llama al Model API y no tiene botón `Evaluate with ML`.** La integración portal -> Model API corresponde a T24 y no forma parte de esta clase. La demo completa de serving, Policy y auditoría vive en el Notebook 05.
+El portal InvoiceOps de `:8000` conserva Rule v1 y la decisión final de la factura. Al usar **Generate model evaluation**, llama a `POST ${INVOICEOPS_MODEL_API_URL}/predict`, aplica `ml-policy-v1` a la probabilidad y persiste el resultado en `model_evaluations`. La evaluación no cambia la decisión final ni reemplaza la recomendación de Rule v1. Notebook 05 sigue siendo la demo guiada de serving, Policy y auditoría.
+
+## Bootstrap local sin notebooks
+
+El bootstrap prepara estado; la gestión de procesos sigue siendo una responsabilidad separada. Con MLflow ya iniciado y accesible por HTTP, ejecutar desde otra terminal:
+
+```bash
+export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
+export INVOICEOPS_DB_PATH=var/local-demo/invoiceops.db
+uv run python scripts/bootstrap_local_demo.py
+```
+
+El comando valida MLflow, garantiza el dataset canónico, migra/siembra SQLite y reutiliza o crea el candidato `random_forest`. Solo si supera el Gate registra su Model Version y promueve `invoice-review@champion`; informa la transición y si el Model API requiere reinicio. No inicia, detiene o reinicia MLflow, Portal o Model API, no borra estado y no ejecuta notebooks. Una segunda ejecución reutiliza el run, versión y alias compatibles.
+
+El bootstrap prepara Registry y el alias `champion`, pero no inicia servicios ni configura procesos. Para evaluar desde el portal, inicie el Model API y defina `INVOICEOPS_MODEL_API_URL` con su URL; tras una promoción, reinicie el Model API para que cargue el nuevo `champion`.
 
 ## Preparación docente
 
@@ -62,6 +76,8 @@ uv sync --all-groups
 uv run python -m ipykernel install --user --name invoiceops-py312 --display-name "InvoiceOps Python 3.12"
 export INVOICEOPS_MODE=demo
 export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
+export INVOICEOPS_DB_PATH=var/local-demo/invoiceops.db
+export INVOICEOPS_MODEL_API_URL=http://127.0.0.1:8001
 ```
 
 ### Windows PowerShell
@@ -72,9 +88,11 @@ uv sync --all-groups
 uv run python -m ipykernel install --user --name invoiceops-py312 --display-name "InvoiceOps Python 3.12"
 $env:INVOICEOPS_MODE = "demo"
 $env:MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
+$env:INVOICEOPS_DB_PATH = "var/local-demo/invoiceops.db"
+$env:INVOICEOPS_MODEL_API_URL = "http://127.0.0.1:8001"
 ```
 
-Seleccionar el kernel `InvoiceOps Python 3.12`. `MLFLOW_TRACKING_URI` debe estar presente tanto en terminal como en el kernel que use Notebook 03.
+Seleccionar el kernel `InvoiceOps Python 3.12`. `MLFLOW_TRACKING_URI` debe estar presente tanto en terminal como en el kernel que use Notebook 03. El portal también lee un archivo `.env` en la raíz sin sobrescribir variables ya definidas; para el flujo integrado puede contener `INVOICEOPS_MODEL_API_URL=http://127.0.0.1:8001`.
 
 ### Abrir los notebooks en Chrome
 
@@ -87,7 +105,7 @@ Seleccionar el kernel `InvoiceOps Python 3.12`. `MLFLOW_TRACKING_URI` debe estar
 2. JupyterLab abrirá el navegador predeterminado. Si no abre Chrome, copiar de la terminal la URL tokenizada que muestra JupyterLab y pegarla en Chrome.
 3. En JupyterLab, navegar a `notebooks/`.
 4. Durante el bloque de Tracking, abrir y ejecutar los notebooks en orden: `01_data_and_baseline.ipynb` -> `02_models_and_metrics.ipynb` -> `03_mlflow_and_model_selection.ipynb`.
-5. Para la demo aislada, abrir y ejecutar después `04_registry_gate_and_promotion.ipynb` -> `05_serving_policy_and_audit.ipynb`.
+5. Para la demo de Registry, Policy y auditoría, abrir y ejecutar después `04_registry_gate_and_promotion.ipynb` -> `05_serving_policy_and_audit.ipynb`.
 6. En cada notebook, verificar que el kernel sea `InvoiceOps Python 3.12` y ejecutar las celdas con `Run All` o `Run Selected`, según indique esta guía.
 7. Mantener viva la terminal donde se ejecuta JupyterLab durante toda la clase. Al terminar, volver a esa terminal y usar `Ctrl+C` para detener JupyterLab.
 
@@ -96,26 +114,32 @@ Seleccionar el kernel `InvoiceOps Python 3.12`. `MLFLOW_TRACKING_URI` debe estar
 | Servicio | Dirección | Uso |
 |---|---|---|
 | MLflow compartido | `http://127.0.0.1:5000` | Tracking de Notebooks 01-03 |
-| Portal InvoiceOps | `http://127.0.0.1:8000` | Regla v1 y lectura de auditorías |
-| Model API de Notebook 05 | `127.0.0.1:<puerto libre>` | Demo aislada; no asumir `8001` |
+| Portal InvoiceOps | `http://127.0.0.1:8000` | Rule v1, decisión final y evaluación ML bajo demanda |
+| Model API | valor de `INVOICEOPS_MODEL_API_URL` | Expone `/predict`; use un puerto libre, por ejemplo `8001` |
 
 Iniciar MLflow:
 
 ```bash
 uv run mlflow server \
-  --backend-store-uri sqlite:///var/mlflow.db \
-  --default-artifact-root ./var/mlflow-artifacts \
+  --backend-store-uri sqlite:///var/local-demo/mlflow.db \
+  --default-artifact-root ./var/local-demo/mlflow-artifacts \
   --host 127.0.0.1 \
   --port 5000
 ```
 
-Iniciar el portal solo si se usará para abrir las dos facturas o consultar su historial:
+Iniciar el portal y configurar la URL del Model API:
 
 ```bash
-INVOICEOPS_MODE=demo uv run uvicorn invoiceops.legacy.app:app --host 127.0.0.1 --port 8000
+INVOICEOPS_MODE=demo INVOICEOPS_DB_PATH=var/local-demo/invoiceops.db INVOICEOPS_MODEL_API_URL=http://127.0.0.1:8001 uv run uvicorn invoiceops.legacy.app:app --host 127.0.0.1 --port 8000
 ```
 
-En PowerShell, usar `$env:INVOICEOPS_MODE = "demo"` antes del comando. Si un puerto está ocupado, detener el proceso conocido o elegir otro puerto y actualizar la URL pertinente. Notebook 05 reserva su propio puerto libre: no iniciar manualmente un proceso en `:8001` para esa demo.
+En otra terminal, iniciar el Model API con el mismo backend MLflow:
+
+```bash
+MLFLOW_TRACKING_URI=http://127.0.0.1:5000 uv run uvicorn invoiceops.model_api.app:app --host 127.0.0.1 --port 8001
+```
+
+En PowerShell, usar `$env:INVOICEOPS_MODE = "demo"` y `$env:INVOICEOPS_MODEL_API_URL = "http://127.0.0.1:8001"` antes del comando. Si un puerto está ocupado, detener el proceso conocido o elegir otro puerto y actualizar `INVOICEOPS_MODEL_API_URL`. Compose solo levanta el portal; no presupone una topología integrada con Model API.
 
 ### Ver resultados en MLflow
 
@@ -125,31 +149,88 @@ Para Notebook 03, desde la raíz del repositorio, levantar el backend compartido
 
 ```bash
 uv run mlflow server \
-  --backend-store-uri sqlite:///var/mlflow.db \
-  --default-artifact-root ./var/mlflow-artifacts \
+  --backend-store-uri sqlite:///var/local-demo/mlflow.db \
+  --default-artifact-root ./var/local-demo/mlflow-artifacts \
   --host 127.0.0.1 \
   --port 5000
 ```
 
 El mismo comando funciona en PowerShell. En la UI, seleccionar `invoice-risk` y comparar runs, métricas, parámetros, tags y artifacts. Notebook 03 no registra versiones ni cambia aliases.
 
-Para Notebooks 04 y 05, usar la celda **Ver esta ejecución en MLflow**. El comando se deriva dinámicamente de `DEMO_ROOT`, por lo que funciona también cuando se configura `INVOICEOPS_NOTEBOOK_DEMO_ROOT` para una demo aislada. Elegir un `<puerto-libre>` y abrir `http://127.0.0.1:<puerto-libre>`. Revisar `invoice-risk` y, en Models, `invoice-review`, sus versiones y aliases. No hay rutas personales codificadas.
+Para Notebooks 04 y 05, usar la celda **Ver esta ejecución en MLflow**: muestra la misma URL de `MLFLOW_TRACKING_URI` configurada en el kernel. No iniciar un segundo servidor. En esa única UI revisar `Experiments -> invoice-risk -> runs` y `Models -> invoice-review -> versiones y aliases`.
 
-Notebook 04 crea runs y Registry. Notebook 05 añade registros de auditoría en SQLite; `model_evaluations`, `source`, `reason` y `correlation_id` no son métricas MLflow. Se revisan en las tablas de Notebook 05 o, si el portal está iniciado, en su historial.
+Notebook 04 reutiliza los runs de 03 para A/C/D y crea únicamente el segundo RandomForest B si hace falta; Registry queda en el mismo backend. Notebook 05 añade registros de auditoría en la misma SQLite operacional elegida por `INVOICEOPS_DB_PATH`; `model_evaluations`, `source`, `reason` y `correlation_id` no son métricas MLflow. Se revisan en las tablas de Notebook 05 o, si el portal está iniciado con la misma variable, en su historial.
+
+### Empezar desde cero
+
+Este procedimiento borra **solo datos locales del laboratorio**: `invoiceops.db`, sus WAL/SHM, `mlflow.db`, `mlflow-artifacts/`, `notebook-state/state.json` y el dataset canónico aislado `data/invoice-risk-v1`. El reset recrea SQLite; el bootstrap posterior recrea el dataset, runs, Model Versions, aliases y auditoría necesarios para la demo. Primero detén el servidor MLflow y todos los kernels Jupyter que lo estén usando. Nunca usarlo contra datos de producción o cloud; antes de borrar, confirma que `MLFLOW_TRACKING_URI` corresponde al servidor local.
+
+Abrir dos terminales desde la raíz de `invoice-ai`. MLflow bloquea la terminal donde se ejecuta, por lo que JupyterLab debe iniciarse desde otra terminal.
+
+#### Terminal A: reset aislado y arrancar MLflow
+
+macOS / Linux:
+
+```bash
+# Primero inspecciona el alcance: no cambia archivos.
+uv run python scripts/reset_demo.py --demo-root var/local-demo
+# Solo tras revisar el dry run, inicializa la única raíz permitida y confirma el reset aislado.
+uv run python scripts/bootstrap_local_demo.py --initialize-demo-root
+uv run python scripts/reset_demo.py --demo-root var/local-demo --confirm-reset-local-demo
+uv run mlflow server \
+  --backend-store-uri sqlite:///var/local-demo/mlflow.db \
+  --default-artifact-root ./var/local-demo/mlflow-artifacts \
+  --host 127.0.0.1 \
+  --port 5000
+```
+
+Windows PowerShell:
+
+```powershell
+uv run python scripts/reset_demo.py --demo-root var/local-demo
+# Solo tras revisar el dry run, inicializa la única raíz permitida y confirma el reset aislado.
+uv run python scripts/bootstrap_local_demo.py --initialize-demo-root
+uv run python scripts/reset_demo.py --demo-root var/local-demo --confirm-reset-local-demo
+uv run mlflow server --backend-store-uri sqlite:///var/local-demo/mlflow.db --default-artifact-root ./var/local-demo/mlflow-artifacts --host 127.0.0.1 --port 5000
+```
+
+El reset confirmado debe ocurrir antes de iniciar JupyterLab o cualquier notebook: elimina `invoiceops.db`, sus WAL/SHM, `mlflow.db`, `mlflow-artifacts/`, `notebook-state/state.json` y el dataset canónico `data/invoice-risk-v1` bajo `var/local-demo`; recrea/siembra exclusivamente `var/local-demo/invoiceops.db`. El bootstrap posterior recrea el dataset aislado. Solo acepta `var/local-demo` dentro del proyecto, marcada por InvoiceOps y sin enlaces simbólicos. Deja esta terminal corriendo y espera a que MLflow quede disponible en `http://127.0.0.1:5000` antes de continuar.
+
+#### Terminal B: configurar el kernel y arrancar JupyterLab
+
+macOS / Linux:
+
+```bash
+export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
+export INVOICEOPS_DB_PATH=var/local-demo/invoiceops.db
+uv run jupyter lab
+```
+
+Windows PowerShell:
+
+```powershell
+$env:MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
+$env:INVOICEOPS_DB_PATH = "var/local-demo/invoiceops.db"
+uv run jupyter lab
+```
+
+Las variables de entorno de Terminal B llegan al proceso de JupyterLab y al kernel que este inicia. Seleccionar `InvoiceOps Python 3.12` y ejecutar **03 -> 04 -> 05** con ese kernel. Mantener Terminal A y Terminal B abiertas durante la demostración; no se inicia Portal, Model API ni Anvil como parte de este reset.
 
 ### Reset y contingencia
 
 Antes de la sesión, si se necesita partir de la base legacy limpia:
 
 ```bash
-INVOICEOPS_MODE=demo uv run python scripts/reset_demo.py
+uv run python scripts/reset_demo.py --demo-root var/local-demo
+# Tras revisar el dry run:
+uv run python scripts/reset_demo.py --demo-root var/local-demo --confirm-reset-local-demo
 ```
 
-`reset_demo.py` borra la base legacy, incluidas facturas, decisiones y `model_evaluations`, y vuelve a sembrar las facturas. Ejecutarlo **antes** de crear la auditoría que se quiere mostrar, nunca después.
+El reset sin confirmación es un *dry run*. Antes de cualquier reset confirmado, ejecute `bootstrap_local_demo.py --initialize-demo-root` para crear o reutilizar el marcador; `reset_demo.py --demo-root var/local-demo --confirm-reset-local-demo` acepta exclusivamente la raíz canónica marcada `var/local-demo`, rechaza cualquier otra ruta, contenido ajeno o enlace simbólico, y elimina `invoiceops.db`, sus WAL/SHM, `mlflow.db`, `mlflow-artifacts/`, `notebook-state/state.json` y el dataset canónico `data/invoice-risk-v1`. Vuelve a sembrar SQLite aislada; el bootstrap posterior recrea el dataset aislado y no usa ni modifica estado compartido. Ejecútalo **antes** de crear la auditoría que se quiere mostrar, nunca después.
 
-Notebook 04 y 05 usan `var/t23_5_demo/` por defecto: su propio Tracking SQLite, Registry, estado idempotente y base de auditorías. Para un entorno alternativo sin tocar ese directorio, definir `INVOICEOPS_NOTEBOOK_DEMO_ROOT` antes de abrir el kernel y ejecutar 04 -> 05 con el mismo valor. Para repetir la ruta por defecto desde cero, cerrar el proceso creado por Notebook 05, eliminar intencionalmente solo `var/t23_5_demo/` y ejecutar 04 -> 05. No hacerlo como paso rutinario durante la clase.
+Notebook 04 y 05 usan `var/local-demo/notebook-state/` únicamente para estado técnico auxiliar. La auditoría usa `INVOICEOPS_DB_PATH=var/local-demo/invoiceops.db`; no existe estado compartido de notebook ni una raíz alternativa admitida por el reset.
 
-Fallbacks disponibles: renders HTML de 04 y 05 en `notebooks/rendered/`. No afirmar que existen renders versionados de 01-03.
+Los notebooks fuente y este runbook son la autoridad. No hay HTML renderizado como contingencia en la ruta estudiantil.
 
 ## Mapa temporal y checkpoints
 
@@ -416,7 +497,7 @@ Frase clave: MLflow no entrena; scikit-learn entrena y MLflow registra evidencia
 
 ### 02:20-02:38 | Registry, Quality Gate y promotion explícita
 
-Ejecutar `notebooks/04_registry_gate_and_promotion.ipynb` después de explicar que usa un Tracking aislado en `var/t23_5_demo/`. El notebook prepara cuatro runs reales y es idempotente para no registrar versiones o promociones duplicadas al reejecutar una celda mutable.
+Ejecutar `notebooks/04_registry_gate_and_promotion.ipynb` después de 03: ambos usan el mismo `MLFLOW_TRACKING_URI`. El notebook reutiliza los runs Dummy, Logistic y RandomForest de 03 como D, C y A; solo lanza un segundo RandomForest B cuando no existe, para demostrar dos Model Versions. Si 03 se omitió, crea explícitamente los candidatos faltantes mediante el CLI productivo en ese mismo backend. El estado idempotente local evita registrar versiones o promociones duplicadas al reejecutar una celda mutable.
 
 Primero preguntar: “¿Tracking y Registry responden la misma pregunta?”
 
@@ -449,7 +530,7 @@ recall >= 0.18
 precision >= 0.48
 ```
 
-El resultado se lee del dataset aislado; no inventar números ni hardcodear `run_id` o versiones. En la ejecución determinista A/B deben dar los dos PASS y D un FAIL. C se explica con su resultado real: si eventualmente aprobara, sigue sin Registration o Promotion automática.
+El resultado se lee de los runs reales compartidos; no inventar números ni hardcodear `run_id` o versiones. En la ejecución determinista A/B deben dar los dos PASS y D un FAIL. C se explica con su resultado real: si eventualmente aprobara, sigue sin Registration o Promotion automática.
 
 Mostrar la regla de gobierno:
 
@@ -462,7 +543,7 @@ Un PASS no registra ni promueve automáticamente. Seguir los tres rótulos de ca
 
 ### 02:38-02:58 | Serving, Policy, auditoría y fallback
 
-Abrir Notebook 05 únicamente después de 04. El notebook resuelve `models:/invoice-review@champion`, inicia Uvicorn local en un puerto libre, espera `/health` y guarda el proceso que creó para limpiarlo de forma segura.
+Abrir Notebook 05 únicamente después de 04 y con el mismo `MLFLOW_TRACKING_URI` e `INVOICEOPS_DB_PATH=var/local-demo/invoiceops.db` del demo aislado. El notebook resuelve `models:/invoice-review@champion`, inicia Uvicorn local en un puerto libre, espera `/health` y guarda el proceso que creó para limpiarlo de forma segura. `var/local-demo/notebook-state/` queda reservado solo para estado técnico auxiliar.
 
 Mostrar primero:
 
@@ -500,7 +581,7 @@ probability <  0.80 -> AUTO_PROCESS
 
 La probabilidad y la recomendación no son lo mismo. El modelo estima `P(manual_review_required=1)`; `ml-policy-v1` aplica una decisión de negocio versionada. La decisión final puede diferir y se debe auditar por separado.
 
-Persistir la evaluación de `INV-10030` con la API real de base de datos y mostrar el historial. Debe incluir modelo, versión, run, probabilidad, policy, threshold, recomendación, source, reason, correlación y fecha. `model_evaluations` no es una final decision.
+Persistir la evaluación de `INV-10030` con la API real de base de datos y mostrar el historial en Notebook 05 y en el portal. Cada operación docente usa una identidad determinista, por lo que SQLite impide duplicar esa auditoría aunque se pierda el estado auxiliar. El historial debe incluir modelo, versión, run, probabilidad, policy, threshold, recomendación, source, reason, correlación y fecha. `model_evaluations` no es una final decision.
 
 Completar el flujo A/B: promover A, reiniciar API, verificar `/health`, predecir y persistir; repetir para B. La misma factura y la misma Policy pueden recibir scores distintos por model version distinta. No exigir que las recomendaciones sean diferentes.
 
@@ -541,7 +622,7 @@ No explicar blockchain aún. Dejar la pregunta: “¿Cómo demostramos en seis m
 
 | Problema | Acción docente |
 |---|---|
-| Jupyter o kernel falla | Usar render 04/05 si aplica y continuar con el razonamiento. |
+| Jupyter o kernel falla | Resolver el kernel o continuar con el razonamiento guiado por este runbook; no usar renders obsoletos como sustituto del notebook fuente. |
 | Training falla | Usar runs existentes; no hacer depender toda la sesión de entrenamiento en vivo. |
 | MLflow falla | Mostrar Notebook 03 o explicar la jerarquía y lineage con la evidencia disponible. |
 | Registry falla | Mostrar el diagrama de run/version/alias y continuar con el concepto. |
@@ -553,10 +634,9 @@ No explicar blockchain aún. Dejar la pregunta: “¿Cómo demostramos en seis m
 - [ ] Python 3.12, `uv sync --all-groups` y kernel `InvoiceOps Python 3.12` listos.
 - [ ] Portal iniciado en modo `demo` solo si se usará.
 - [ ] MLflow compartido responde en `:5000`; kernel/terminal de 01-03 tienen `MLFLOW_TRACKING_URI`.
-- [ ] `reset_demo.py` se ejecutó antes de generar auditorías demostrativas.
+- [ ] Se revisó el *dry run* de `reset_demo.py --demo-root var/local-demo` antes de confirmar `--confirm-reset-local-demo`.
 - [ ] Notebooks 01, 02 y 03 ejecutables con sus precondiciones.
-- [ ] Notebook 04 produce candidatos reales, 2 PASS y 1 FAIL, en su estado aislado.
-- [ ] Notebook 05 se ejecutará después de 04 y puede reservar un puerto local libre.
-- [ ] Renders 04 y 05 disponibles como contingencia.
-- [ ] Se puede explicar con precisión que portal solo visualiza auditorías y no integra Model API.
+- [ ] Notebook 04 reutiliza candidatos reales del backend compartido, conserva 2 RandomForest PASS y 1 Dummy FAIL, y registra versiones sin duplicarlas al reejecutar.
+- [ ] Notebook 05 se ejecutará después de 04, comparte `INVOICEOPS_DB_PATH` con el portal y puede reservar un puerto local libre.
+- [ ] Se puede explicar que el portal llama a `POST ${INVOICEOPS_MODEL_API_URL}/predict` al generar una evaluación, aplica la Policy y guarda `model_evaluations` sin cambiar Rule v1 ni la decisión final.
 - [ ] Se puede explicar que el API carga el modelo solo al startup y que Promotion requiere restart más `/health` para cambiar el runtime.
