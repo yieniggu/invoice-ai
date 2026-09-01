@@ -1,0 +1,161 @@
+<Activity mc:Ignorable="sap sap2010" x:Class="Main"
+ xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities"
+ xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+ xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation"
+ xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation"
+ xmlns:scg="clr-namespace:System.Collections.Generic;assembly=System.Private.CoreLib"
+ xmlns:ui="http://schemas.uipath.com/workflow/activities"
+ xmlns:uix="http://schemas.uipath.com/workflow/activities/uix"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <TextExpression.NamespacesForImplementation>
+    <scg:List x:TypeArguments="x:String" Capacity="8">
+      <x:String>System</x:String>
+      <x:String>System.Activities</x:String>
+      <x:String>System.Activities.Statements</x:String>
+      <x:String>System.Collections.Generic</x:String>
+      <x:String>Microsoft.VisualBasic</x:String>
+      <x:String>UiPath.UIAutomationNext.Activities</x:String>
+      <x:String>UiPath.UIAutomationNext.Models</x:String>
+      <x:String>UiPath.Core.Activities</x:String>
+    </scg:List>
+  </TextExpression.NamespacesForImplementation>
+  <TextExpression.ReferencesForImplementation>
+    <scg:List x:TypeArguments="AssemblyReference" Capacity="13">
+      <AssemblyReference>System.Activities</AssemblyReference>
+      <AssemblyReference>Microsoft.VisualBasic</AssemblyReference>
+      <AssemblyReference>System</AssemblyReference>
+      <AssemblyReference>System.Private.CoreLib</AssemblyReference>
+      <AssemblyReference>System.Runtime</AssemblyReference>
+      <AssemblyReference>System.Collections</AssemblyReference>
+      <AssemblyReference>System.ObjectModel</AssemblyReference>
+      <AssemblyReference>UiPath.System.Activities</AssemblyReference>
+      <AssemblyReference>UiPath.UIAutomationNext.Activities</AssemblyReference>
+      <AssemblyReference>UiPath.Platform</AssemblyReference>
+      <AssemblyReference>netstandard</AssemblyReference>
+      <AssemblyReference>mscorlib</AssemblyReference>
+      <AssemblyReference>System.Xaml</AssemblyReference>
+    </scg:List>
+  </TextExpression.ReferencesForImplementation>
+  <Sequence DisplayName="InvoiceOps RPA Demo">
+    <Sequence.Variables>
+      <Variable x:TypeArguments="x:String" Default="[&quot;http://127.0.0.1:8000&quot;]" Name="baseUrl" />
+      <Variable x:TypeArguments="x:String" Default="[&quot;INV-10023&quot;]" Name="invoiceId" />
+      <Variable x:TypeArguments="x:String" Default="[&quot;analyst&quot;]" Name="username" />
+      <Variable x:TypeArguments="x:String" Default="[&quot;demo-password&quot;]" Name="password" />
+      <Variable x:TypeArguments="x:String" Name="amountText" />
+      <Variable x:TypeArguments="x:String" Name="poText" />
+      <Variable x:TypeArguments="x:String" Name="matchText" />
+      <Variable x:TypeArguments="x:Decimal" Name="amount" />
+      <Variable x:TypeArguments="x:Boolean" Name="hasPurchaseOrder" />
+      <Variable x:TypeArguments="x:Boolean" Name="threeWayMatch" />
+      <Variable x:TypeArguments="x:String" Name="decision" />
+      <Variable x:TypeArguments="x:String" Name="expectedStatus" />
+      <Variable x:TypeArguments="x:String" Name="statusText" />
+    </Sequence.Variables>
+    <uix:NApplicationCard AttachMode="ByInstance" DisplayName="Use Application/Browser Chrome: InvoiceOps" HealingAgentBehavior="Job" ScopeGuid="1adafc39-c041-4049-bc9f-552d196e02c8" Version="V2">
+      <uix:NApplicationCard.Body>
+        <ActivityAction x:TypeArguments="x:Object">
+          <ActivityAction.Argument>
+            <DelegateInArgument x:TypeArguments="x:Object" Name="WSSessionData" />
+          </ActivityAction.Argument>
+          <Sequence DisplayName="Do">
+            <Sequence DisplayName="01 Login">
+              <uix:NTypeInto ActivateBefore="True" ClickBeforeMode="Single" DisplayName="Type Into Username" EmptyFieldMode="SingleLine" HealingAgentBehavior="SameAsCard" InteractionMode="Simulate" ScopeIdentifier="1adafc39-c041-4049-bc9f-552d196e02c8" Text="[username]" Version="V5">
+                <uix:NTypeInto.Target>
+                  <uix:TargetAnchorable ElementType="InputBox" ElementVisibilityArgument="Interactive" FullSelectorArgument="&lt;webctrl tag='INPUT' name='username' autocomplete='username' /&gt;" ScopeSelectorArgument="&lt;html app='chrome.exe' /&gt;" SearchSteps="Selector" Version="V6" WaitForReadyArgument="Interactive" />
+                </uix:NTypeInto.Target>
+              </uix:NTypeInto>
+              <uix:NTypeInto ActivateBefore="True" ClickBeforeMode="Single" DisplayName="Type Into Password" EmptyFieldMode="SingleLine" HealingAgentBehavior="SameAsCard" InteractionMode="Simulate" ScopeIdentifier="1adafc39-c041-4049-bc9f-552d196e02c8" Text="[password]" Version="V5">
+                <uix:NTypeInto.Target>
+                  <uix:TargetAnchorable ElementType="InputBoxPassword" ElementVisibilityArgument="Interactive" FullSelectorArgument="&lt;webctrl tag='INPUT' name='password' type='password' autocomplete='current-password' /&gt;" ScopeSelectorArgument="&lt;html app='chrome.exe' /&gt;" SearchSteps="Selector" Version="V6" WaitForReadyArgument="Interactive" />
+                </uix:NTypeInto.Target>
+              </uix:NTypeInto>
+              <uix:NClick ActivateBefore="True" ClickType="Single" DisplayName="Click Sign in" HealingAgentBehavior="SameAsCard" InteractionMode="Simulate" KeyModifiers="None" MouseButton="Left" ScopeIdentifier="1adafc39-c041-4049-bc9f-552d196e02c8" Version="V5">
+                <uix:NClick.Target>
+                  <uix:TargetAnchorable ElementType="Button" ElementVisibilityArgument="Interactive" FullSelectorArgument="&lt;webctrl tag='BUTTON' type='submit' aaname='Sign in' /&gt;" ScopeSelectorArgument="&lt;html app='chrome.exe' /&gt;" SearchSteps="Selector" Version="V6" WaitForReadyArgument="Interactive" />
+                </uix:NClick.Target>
+              </uix:NClick>
+            </Sequence>
+            <Sequence DisplayName="02 Search Invoice">
+              <uix:NTypeInto ActivateBefore="True" ClickBeforeMode="Single" DisplayName="Type Into Search ID or vendor" EmptyFieldMode="SingleLine" HealingAgentBehavior="SameAsCard" InteractionMode="Simulate" ScopeIdentifier="1adafc39-c041-4049-bc9f-552d196e02c8" Text="[invoiceId]" Version="V5">
+                <uix:NTypeInto.Target>
+                  <uix:TargetAnchorable ElementType="InputBox" ElementVisibilityArgument="Interactive" FullSelectorArgument="&lt;webctrl tag='INPUT' id='query' name='q' aaname='Search ID or vendor' /&gt;" ScopeSelectorArgument="&lt;html app='chrome.exe' /&gt;" SearchSteps="Selector" Version="V6" WaitForReadyArgument="Interactive" />
+                </uix:NTypeInto.Target>
+              </uix:NTypeInto>
+              <uix:NClick ActivateBefore="True" ClickType="Single" DisplayName="Click Search" HealingAgentBehavior="SameAsCard" InteractionMode="Simulate" KeyModifiers="None" MouseButton="Left" ScopeIdentifier="1adafc39-c041-4049-bc9f-552d196e02c8" Version="V5">
+                <uix:NClick.Target>
+                  <uix:TargetAnchorable ElementType="Button" ElementVisibilityArgument="Interactive" FullSelectorArgument="&lt;webctrl tag='BUTTON' aaname='Search' /&gt;" ScopeSelectorArgument="&lt;html app='chrome.exe' /&gt;" SearchSteps="Selector" Version="V6" WaitForReadyArgument="Interactive" />
+                </uix:NClick.Target>
+              </uix:NClick>
+            </Sequence>
+            <Sequence DisplayName="03 Open Invoice">
+              <uix:NClick ActivateBefore="True" ClickType="Single" DisplayName="Open invoice" HealingAgentBehavior="SameAsCard" InteractionMode="Simulate" KeyModifiers="None" MouseButton="Left" ScopeIdentifier="1adafc39-c041-4049-bc9f-552d196e02c8" Version="V5">
+                <uix:NClick.Target>
+                  <uix:TargetAnchorable ElementType="Hyperlink" ElementVisibilityArgument="Interactive" FullSelectorArgument="[String.Format(&quot;&lt;webctrl tag='A' href='/invoices/{0}' innertext='{0}' /&gt;&quot;, invoiceId)]" ScopeSelectorArgument="&lt;html app='chrome.exe' /&gt;" SearchSteps="Selector" Version="V6" WaitForReadyArgument="Interactive" />
+                </uix:NClick.Target>
+              </uix:NClick>
+            </Sequence>
+            <Sequence DisplayName="04 Extract Invoice Data">
+              <uix:NGetText DisplayName="Get invoice amount" HealingAgentBehavior="SameAsCard" ScopeIdentifier="1adafc39-c041-4049-bc9f-552d196e02c8" Text="[amountText]" Version="V5">
+                <uix:NGetText.Target>
+                  <uix:TargetAnchorable ElementVisibilityArgument="Interactive" FullSelectorArgument="&lt;webctrl data-testid='invoice-amount' /&gt;" ScopeSelectorArgument="&lt;html app='chrome.exe' /&gt;" SearchSteps="Selector" Version="V6" WaitForReadyArgument="Interactive" />
+                </uix:NGetText.Target>
+              </uix:NGetText>
+              <uix:NGetText DisplayName="Get purchase order" HealingAgentBehavior="SameAsCard" ScopeIdentifier="1adafc39-c041-4049-bc9f-552d196e02c8" Text="[poText]" Version="V5">
+                <uix:NGetText.Target>
+                  <uix:TargetAnchorable ElementVisibilityArgument="Interactive" FullSelectorArgument="&lt;webctrl data-testid='invoice-has-po' /&gt;" ScopeSelectorArgument="&lt;html app='chrome.exe' /&gt;" SearchSteps="Selector" Version="V6" WaitForReadyArgument="Interactive" />
+                </uix:NGetText.Target>
+              </uix:NGetText>
+              <uix:NGetText DisplayName="Get three-way match" HealingAgentBehavior="SameAsCard" ScopeIdentifier="1adafc39-c041-4049-bc9f-552d196e02c8" Text="[matchText]" Version="V5">
+                <uix:NGetText.Target>
+                  <uix:TargetAnchorable ElementVisibilityArgument="Interactive" FullSelectorArgument="&lt;webctrl data-testid='invoice-three-way-match' /&gt;" ScopeSelectorArgument="&lt;html app='chrome.exe' /&gt;" SearchSteps="Selector" Version="V6" WaitForReadyArgument="Interactive" />
+                </uix:NGetText.Target>
+              </uix:NGetText>
+              <Assign DisplayName="Normalize amount" To="[amount]" Value="[Decimal.Parse(amountText.Replace(&quot;$&quot;, String.Empty).Trim(), System.Globalization.CultureInfo.InvariantCulture)]" />
+              <Assign DisplayName="Normalize purchase order" To="[hasPurchaseOrder]" Value="[String.Equals(poText.Trim(), &quot;Yes&quot;, StringComparison.OrdinalIgnoreCase)]" />
+              <Assign DisplayName="Normalize three-way match" To="[threeWayMatch]" Value="[String.Equals(matchText.Trim(), &quot;Yes&quot;, StringComparison.OrdinalIgnoreCase)]" />
+            </Sequence>
+            <Sequence DisplayName="05 Apply Rule v1">
+              <Assign DisplayName="Set decision" To="[decision]" Value="[If(amount &lt;= 5000D AndAlso hasPurchaseOrder AndAlso threeWayMatch, &quot;AUTO_PROCESS&quot;, &quot;MANUAL_REVIEW&quot;)]" />
+              <Assign DisplayName="Set expected status" To="[expectedStatus]" Value="[If(decision = &quot;AUTO_PROCESS&quot;, &quot;AUTO_PROCESSED&quot;, &quot;MANUAL_REVIEW&quot;)]" />
+            </Sequence>
+            <Sequence DisplayName="06 Execute Decision">
+              <If Condition="[decision = &quot;AUTO_PROCESS&quot;]">
+                <If.Then>
+                  <uix:NClick ActivateBefore="True" ClickType="Single" DisplayName="Process invoice" HealingAgentBehavior="SameAsCard" InteractionMode="Simulate" KeyModifiers="None" MouseButton="Left" ScopeIdentifier="1adafc39-c041-4049-bc9f-552d196e02c8" Version="V5">
+                    <uix:NClick.Target>
+                      <uix:TargetAnchorable ElementType="Button" ElementVisibilityArgument="Interactive" FullSelectorArgument="&lt;webctrl tag='BUTTON' data-testid='invoice-process' /&gt;" ScopeSelectorArgument="&lt;html app='chrome.exe' /&gt;" SearchSteps="Selector" Version="V6" WaitForReadyArgument="Interactive" />
+                    </uix:NClick.Target>
+                  </uix:NClick>
+                </If.Then>
+                <If.Else>
+                  <uix:NClick ActivateBefore="True" ClickType="Single" DisplayName="Send invoice to manual review" HealingAgentBehavior="SameAsCard" InteractionMode="Simulate" KeyModifiers="None" MouseButton="Left" ScopeIdentifier="1adafc39-c041-4049-bc9f-552d196e02c8" Version="V5">
+                    <uix:NClick.Target>
+                      <uix:TargetAnchorable ElementType="Button" ElementVisibilityArgument="Interactive" FullSelectorArgument="&lt;webctrl tag='BUTTON' data-testid='invoice-manual-review' /&gt;" ScopeSelectorArgument="&lt;html app='chrome.exe' /&gt;" SearchSteps="Selector" Version="V6" WaitForReadyArgument="Interactive" />
+                    </uix:NClick.Target>
+                  </uix:NClick>
+                </If.Else>
+              </If>
+            </Sequence>
+            <Sequence DisplayName="07 Verify Result">
+              <uix:NGetText DisplayName="Get invoice status" HealingAgentBehavior="SameAsCard" ScopeIdentifier="1adafc39-c041-4049-bc9f-552d196e02c8" Text="[statusText]" Version="V5">
+                <uix:NGetText.Target>
+                  <uix:TargetAnchorable ElementVisibilityArgument="Interactive" FullSelectorArgument="&lt;webctrl data-testid='invoice-status' /&gt;" ScopeSelectorArgument="&lt;html app='chrome.exe' /&gt;" SearchSteps="Selector" Version="V6" WaitForReadyArgument="Interactive" />
+                </uix:NGetText.Target>
+              </uix:NGetText>
+              <If Condition="[Not String.Equals(statusText.Trim(), expectedStatus, StringComparison.Ordinal)]">
+                <If.Then>
+                  <Throw DisplayName="Throw status mismatch" Exception="[New Exception(String.Format(&quot;Invoice {0}: expected {1}, actual {2}&quot;, invoiceId, expectedStatus, statusText))]" />
+                </If.Then>
+              </If>
+              <ui:LogMessage DisplayName="Log verified status" Level="Info" Message="[String.Format(&quot;{0}: {1}&quot;, invoiceId, statusText.Trim())]" />
+            </Sequence>
+          </Sequence>
+        </ActivityAction>
+      </uix:NApplicationCard.Body>
+      <uix:NApplicationCard.TargetApp>
+        <uix:TargetApp BrowserType="Chrome" Selector="&lt;html app='chrome.exe' /&gt;" Url="[baseUrl &amp; &quot;/login&quot;]" Version="V3" />
+      </uix:NApplicationCard.TargetApp>
+    </uix:NApplicationCard>
+  </Sequence>
+</Activity>

@@ -1,0 +1,6 @@
+{
+  "ProjectType": "Process",
+  "Name": "InvoiceOps-RPA-Demo",
+  "Description": null,
+  "MainFile": "Main.xaml"
+}

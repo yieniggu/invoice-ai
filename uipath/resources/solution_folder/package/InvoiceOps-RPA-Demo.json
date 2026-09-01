@@ -1,0 +1,26 @@
+{
+  "docVersion": "1.0.0",
+  "resource": {
+    "name": "InvoiceOps-RPA-Demo",
+    "kind": "package",
+    "apiVersion": "orchestrator.uipath.com/v1",
+    "projectKey": "cdc7a2b4-dd85-44d3-8af7-9a7a32570bf7",
+    "isOverridable": true,
+    "dependencies": [],
+    "runtimeDependencies": [],
+    "files": [],
+    "folders": [
+      {
+        "fullyQualifiedName": "solution_folder"
+      }
+    ],
+    "spec": {
+      "fileName": null,
+      "fileReference": null,
+      "name": "InvoiceOps-RPA-Demo",
+      "description": null
+    },
+    "locks": [],
+    "key": "0160ecf8-a6fd-4f04-b134-b766f39b56d0"
+  }
+}
