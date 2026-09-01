@@ -253,6 +253,12 @@ def test_prediction_failure_marks_model_unavailable_and_returns_safe_response(
 def test_invalid_model_metadata_returns_safe_unavailable_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("INVOICEOPS_MODEL_URI", "invoice-review")
+    monkeypatch.setattr(
+        model_api,
+        "MlflowClient",
+        lambda: pytest.fail("invalid metadata must not resolve an MLflow model alias"),
+    )
     monkeypatch.setattr(model_api.mlflow.sklearn, "load_model", lambda _: StubModel())
     monkeypatch.setattr(
         model_api.mlflow.models,
