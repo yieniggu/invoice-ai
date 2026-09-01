@@ -53,17 +53,26 @@ jobs:
       - name: Install Chromium
         run: uv run playwright install --with-deps chromium
 
-      - name: Reset demo database
-        run: uv run python scripts/reset_demo.py
+      - name: Reset and seed isolated demo database
+        env:
+          INVOICEOPS_DB_PATH: var/local-demo/invoiceops.db
+        run: |
+          uv run python scripts/bootstrap_local_demo.py --initialize-demo-root
+          uv run python scripts/reset_demo.py \
+            --demo-root var/local-demo \
+            --confirm-reset-local-demo
+          test -f "$INVOICEOPS_DB_PATH"
 
       - name: Start server and run browser smoke
         run: |
-          INVOICEOPS_MODE=demo uv run uvicorn invoiceops.legacy.app:app --host 127.0.0.1 --port 8000 &
+          INVOICEOPS_MODE=demo INVOICEOPS_DB_PATH="$INVOICEOPS_DB_PATH" \
+            uv run uvicorn invoiceops.legacy.app:app --host 127.0.0.1 --port 8000 &
           server_pid=$!
           trap 'kill "$server_pid" 2>/dev/null || true' EXIT
           for attempt in {1..30}; do
             if curl --fail --silent --show-error http://127.0.0.1:8000/api/health; then
-              INVOICEOPS_MODE=demo uv run python -m invoiceops.automation.bot \
+              INVOICEOPS_MODE=demo INVOICEOPS_DB_PATH="$INVOICEOPS_DB_PATH" \
+                uv run python -m invoiceops.automation.bot \
                 --invoice-id INV-10023 \
                 --base-url http://127.0.0.1:8000 \
                 --locator testid
@@ -73,6 +82,8 @@ jobs:
           done
           echo "Server did not become healthy within 30 seconds." >&2
           exit 1
+        env:
+          INVOICEOPS_DB_PATH: var/local-demo/invoiceops.db
 
       - name: Upload Playwright failure screenshot
         if: ${{ failure() }}

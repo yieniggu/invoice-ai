@@ -23,6 +23,10 @@ def evaluate_run(run_id: str) -> tuple[float, float]:
     return metrics["recall"], metrics["precision"]
 
 
+def passes_gate(recall: float, precision: float) -> bool:
+    return recall >= RECALL_THRESHOLD and precision >= PRECISION_THRESHOLD
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Evaluate an InvoiceOps MLflow run against quality thresholds."
@@ -33,7 +37,7 @@ def main() -> None:
     recall, precision = evaluate_run(args.run_id)
     recall_passes = recall >= RECALL_THRESHOLD
     precision_passes = precision >= PRECISION_THRESHOLD
-    gate_passes = recall_passes and precision_passes
+    gate_passes = passes_gate(recall, precision)
 
     print(f"Recall: {recall:.6f} {'PASS' if recall_passes else 'FAIL'}")
     print(f"Precision: {precision:.6f} {'PASS' if precision_passes else 'FAIL'}")

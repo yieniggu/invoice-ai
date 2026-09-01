@@ -6,7 +6,31 @@ __pycache__/
 .ipynb_checkpoints/
 notebooks/.ipynb_checkpoints/
 .env
-var/*.db
+# Generated local-only state. Intentional source assets remain tracked.
+.codegraph/
+var/local-demo/
+var/ci-browser-smoke/
+var/t23_5_demo/
+notebooks/var/
+notebooks/data/
+var/local-demo/*.db
+var/local-demo/*.db-shm
+var/local-demo/*.db-wal
+# UiPath source and distributable package assets are versioned; Studio state is local-only.
+uipath/**/.local/
+uipath/**/.storage/
+uipath/**/.screenshots/
+var/invoiceops.db
+var/invoiceops.db-shm
+var/invoiceops.db-wal
+var/mlflow.db
+var/mlflow.db-shm
+var/mlflow.db-wal
+var/mlflow-artifacts/
+mlflow.db
+mlflow.db-shm
+mlflow.db-wal
+mlflow-artifacts/
 artifacts/
 playwright-report/
 test-results/

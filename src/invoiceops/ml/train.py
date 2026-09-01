@@ -32,15 +32,45 @@ MODEL_BUILDERS: dict[str, Callable[[], Pipeline]] = {
 }
 
 
-def _dataset_dir() -> Path:
-    path = Path("data") / CANONICAL_DATASET_VERSION
-    if not all((path / filename).is_file() for filename in SPLIT_FILENAMES):
-        return generate_synthetic_dataset(
-            seed=CANONICAL_DATASET_SEED,
-            rows=CANONICAL_DATASET_ROWS,
-            version=CANONICAL_DATASET_VERSION,
+def ensure_canonical_dataset(*, output_root: Path = Path("data")) -> tuple[Path, str]:
+    """Create the canonical dataset once, or verify the existing lineage."""
+    path = output_root / CANONICAL_DATASET_VERSION
+    if not path.exists():
+        return (
+            generate_synthetic_dataset(
+                seed=CANONICAL_DATASET_SEED,
+                rows=CANONICAL_DATASET_ROWS,
+                version=CANONICAL_DATASET_VERSION,
+                output_root=output_root,
+            ),
+            "created",
         )
-    return path
+
+    metadata_path = path / "metadata.json"
+    if not metadata_path.is_file() or not all((path / filename).is_file() for filename in SPLIT_FILENAMES):
+        raise ValueError("Canonical dataset is incomplete; restore it or use a clean data directory")
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    expected = {
+        "dataset_version": CANONICAL_DATASET_VERSION,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "rows": CANONICAL_DATASET_ROWS,
+        "seed": CANONICAL_DATASET_SEED,
+        "target": TARGET,
+    }
+    if any(metadata.get(name) != value for name, value in expected.items()):
+        raise ValueError("Canonical dataset metadata is incompatible")
+    hashes = metadata.get("split_sha256", {})
+    if any(
+        hashes.get(filename) != hashlib.sha256((path / filename).read_bytes()).hexdigest()
+        for filename in SPLIT_FILENAMES
+    ):
+        raise ValueError("Canonical dataset contents do not match its metadata")
+    return path, "reused"
+
+
+def _dataset_dir() -> Path:
+    return ensure_canonical_dataset()[0]
 
 
 def _git_commit() -> str:
@@ -72,7 +102,7 @@ def _track_run(
     metrics: dict[str, float],
     train: pd.DataFrame,
     validation: pd.DataFrame,
-) -> None:
+) -> str:
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
     if tracking_uri:
         mlflow.set_tracking_uri(tracking_uri)
@@ -110,7 +140,7 @@ def _track_run(
         )
         mlflow.sklearn.save_model(pipeline, artifacts_dir / "pipeline")
 
-        with mlflow.start_run(run_name=f"{model_type}-{dataset_metadata['dataset_version']}"):
+        with mlflow.start_run(run_name=f"{model_type}-{dataset_metadata['dataset_version']}") as run:
             mlflow.log_input(
                 mlflow.data.from_pandas(
                     train[MODEL_FEATURES + [TARGET]],
@@ -139,6 +169,22 @@ def _track_run(
             mlflow.log_artifact(artifacts_dir / "metrics.json")
             mlflow.log_artifact(artifacts_dir / "feature_schema.json")
             mlflow.log_artifacts(artifacts_dir / "pipeline", artifact_path="pipeline")
+            return run.info.run_id
+
+
+def train_model(model_type: str, *, dataset_dir: Path | None = None) -> tuple[str, dict[str, float]]:
+    if model_type not in MODEL_BUILDERS:
+        raise ValueError(f"Unsupported model type: {model_type}")
+    dataset_dir = dataset_dir or _dataset_dir()
+    train = pd.read_csv(dataset_dir / "train.csv")
+    validation = pd.read_csv(dataset_dir / "validation.csv")
+    pipeline = MODEL_BUILDERS[model_type]()
+    pipeline.fit(train[MODEL_FEATURES], train[TARGET])
+
+    predictions = pipeline.predict(validation[MODEL_FEATURES])
+    probabilities = pipeline.predict_proba(validation[MODEL_FEATURES])[:, 1]
+    metrics = evaluate_binary_classifier(validation[TARGET], predictions, probabilities)
+    return _track_run(model_type, pipeline, dataset_dir, metrics, train, validation), metrics
 
 
 def main() -> None:
@@ -146,16 +192,7 @@ def main() -> None:
     parser.add_argument("--model", choices=MODEL_BUILDERS, required=True)
     args = parser.parse_args()
 
-    dataset_dir = _dataset_dir()
-    train = pd.read_csv(dataset_dir / "train.csv")
-    validation = pd.read_csv(dataset_dir / "validation.csv")
-    pipeline = MODEL_BUILDERS[args.model]()
-    pipeline.fit(train[MODEL_FEATURES], train[TARGET])
-
-    predictions = pipeline.predict(validation[MODEL_FEATURES])
-    probabilities = pipeline.predict_proba(validation[MODEL_FEATURES])[:, 1]
-    metrics = evaluate_binary_classifier(validation[TARGET], predictions, probabilities)
-    _track_run(args.model, pipeline, dataset_dir, metrics, train, validation)
+    _, metrics = train_model(args.model)
 
     print(f"model: {args.model}")
     for name, value in metrics.items():
