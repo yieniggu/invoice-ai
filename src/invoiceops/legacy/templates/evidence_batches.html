@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Evidence batches | InvoiceOps{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">Evidence</p>
+    <h1>Evidence batches</h1>
+  </div>
+</div>
+<section class="card">
+  <h2>Existing snapshots</h2>
+  {% if batches %}<ol class="batch-list">{% for batch in batches %}<li class="batch-summary"><div><strong>Evidence batch {{ batch["id"] }}</strong><span>{{ batch["created_at"] }} · {{ batch["leaf_count"] }} records</span><code>{{ batch["root_hash"][:12] }}...</code></div><div><span class="status">{{ batch["anchor_status"] or "Not anchored" }}</span><a href="/evidence/batches/{{ batch["id"] }}">View detail</a><a href="/evidence/batches?source_batch_id={{ batch["id"] }}">Create successor</a></div></li>{% endfor %}</ol>{% else %}<p class="empty" role="status">No evidence batches have been created.</p>{% endif %}
+</section>
+<section class="card evidence-batch-card">
+  {% if source_batch %}<div class="lineage-callout"><p class="eyebrow">Accumulated successor</p><h2>Adding to batch {{ source_batch.id }} creates a new snapshot</h2><p>The original root, proofs, and anchor stay unchanged. This successor includes its {{ source_batch.leaf_count }} records plus only the new selections below.</p><a href="/evidence/batches/{{ source_batch.id }}">Review source batch {{ source_batch.id }}</a></div>{% else %}<h2>Create a new snapshot</h2>{% endif %}
+  <p id="evidence-records-help" class="section-intro">{{ "Select new verified Evidence Records. The server carries the source evidence forward and builds a new root and proofs." if source_batch else "Select at least two verified Evidence Records. The server builds the root and proofs; this page never hashes evidence." }}</p>
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  {% if records %}
+  <form action="/evidence/batches" method="post" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+    {% if source_batch %}<input type="hidden" name="source_batch_id" value="{{ source_batch.id }}">{% endif %}
+    <fieldset class="evidence-records" aria-describedby="evidence-records-help">
+      <legend>Verified Evidence Records</legend>
+      <div class="evidence-record-list">
+        {% for record in records %}
+        <label class="evidence-record">
+          <input type="checkbox" name="evaluation_id" value="{{ record.evaluation_id }}">
+          <span class="evidence-record-content">
+            <span class="evidence-record-evaluation">
+              <span><span class="evidence-record-label">Evaluation</span> {{ record.evaluation_id }}</span>
+              <span class="evidence-record-state">Selected</span>
+            </span>
+            <span class="evidence-record-details"><span class="evidence-record-label">Invoice</span> {{ record.invoice_id }}</span>
+            <span class="evidence-record-details"><span class="evidence-record-label">Contract</span> <span class="copyable">{{ record.contract_version }}</span></span>
+          </span>
+        </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    <button type="submit">{{ "Create accumulated successor" if source_batch else "Create evidence batch" }}</button>
+  </form>
+  {% else %}
+  <p class="empty" role="status">No verified Evidence Records are available.</p>
+  {% endif %}
+</section>
+{% if batched_records %}<section class="card"><h2>Already included evidence</h2><p class="section-intro">These records are immutable parts of existing snapshots. Open the batch to inspect them, or choose a source above to add only new evidence.</p><ul class="included-records">{% for membership in batched_records %}<li>Evaluation {{ membership.record.evaluation_id }} · invoice {{ membership.record.invoice_id }} · {% for batch_id in membership.batch_ids %}<a href="/evidence/batches/{{ batch_id }}">Already included in batch {{ batch_id }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</li>{% endfor %}</ul></section>{% endif %}
+{% endblock %}

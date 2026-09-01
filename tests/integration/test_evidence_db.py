@@ -9,6 +9,7 @@ from invoiceops.evidence import (
     EvidenceProvenance,
     EvidenceRecord,
     backfill_canonical_evidence_records,
+    create_evidence_batch_successor,
     get_evidence_record,
     persist_evidence_records,
     verify_persisted_evidence_record,
@@ -43,7 +44,7 @@ def _record(evaluation_id: int) -> EvidenceRecord:
 def test_evidence_records_migration_links_one_v1_record_to_each_evaluation(tmp_path) -> None:
     db_path = tmp_path / "invoiceops.db"
 
-    assert run_migrations(db_path) == 8
+    assert run_migrations(db_path) == 9
 
     with _connect(db_path) as connection:
         columns = connection.execute("PRAGMA table_info(evidence_records)").fetchall()
@@ -206,7 +207,7 @@ def test_canonical_backfill_migrates_pre_006_records_without_touching_protected_
                 "2026-01-01T00:00:00Z",
             ),
         )
-    assert run_migrations(db_path) == 3
+    assert run_migrations(db_path) == 4
 
     with _connect(db_path) as connection:
         before = connection.execute(
@@ -335,13 +336,11 @@ def test_evidence_batch_persists_verified_records_in_evaluation_id_order(tmp_pat
     persist_evidence_records(db_path, [_record(1), _record(2), _record(3)])
 
     batch = create_evidence_batch(db_path, [3, 1, 2])
-    reordered_batch = create_evidence_batch(db_path, [2, 3, 1])
     reread = get_evidence_batch(db_path, batch.id)
 
     assert [item.evaluation_id for item in batch.items] == [1, 2, 3]
     assert [item.leaf_index for item in batch.items] == [0, 1, 2]
     assert reread == batch
-    assert reordered_batch.root_hash == batch.root_hash
     assert all(
         verify_merkle_proof(item.leaf_hash, item.proof, batch.root_hash) for item in batch.items
     )
@@ -426,10 +425,89 @@ def test_evidence_batch_rejects_invalid_selection_without_persisting_partial_bat
         assert connection.execute("SELECT COUNT(*) FROM evidence_batches").fetchone()[0] == 0
 
 
+def test_evidence_batch_successor_accumulates_new_evidence_without_mutating_its_origin(tmp_path) -> None:
+    from invoiceops.evidence import create_evidence_batch, get_evidence_batch
+
+    db_path = tmp_path / "invoiceops.db"
+    seed_invoices(db_path)
+    for index, invoice_id in enumerate(("INV-10023", "INV-10024", "INV-10025"), start=1):
+        insert_model_evaluation(
+            db_path,
+            invoice_id,
+            correlation_id=f"corr-successor-{index}",
+            model_name="invoice-review",
+            model_version="7",
+            run_id=f"run-{index}",
+            manual_review_probability=0.8,
+            recommendation=recommend_from_probability(0.8),
+        )
+    persist_evidence_records(db_path, [_record(1), _record(2), _record(3)])
+    origin = create_evidence_batch(db_path, [1, 2])
+    origin_root = origin.root_hash
+    origin_items = origin.items
+
+    successor = create_evidence_batch_successor(db_path, origin.id, [3])
+
+    assert [item.evaluation_id for item in successor.items] == [1, 2, 3]
+    assert successor.root_hash != origin_root
+    assert get_evidence_batch(db_path, origin.id).root_hash == origin_root
+    assert get_evidence_batch(db_path, origin.id).items == origin_items
+    with _connect(db_path) as connection:
+        relation = connection.execute(
+            "SELECT origin_batch_id, successor_batch_id FROM evidence_batch_successors"
+        ).fetchone()
+    assert tuple(relation) == (origin.id, successor.id)
+
+
+def test_evidence_batch_rejects_reused_record_atomically(tmp_path) -> None:
+    from invoiceops.evidence import create_evidence_batch
+
+    db_path = tmp_path / "invoiceops.db"
+    seed_invoices(db_path)
+    for index, invoice_id in enumerate(("INV-10023", "INV-10024", "INV-10025"), start=1):
+        insert_model_evaluation(
+            db_path,
+            invoice_id,
+            correlation_id=f"corr-reused-{index}",
+            model_name="invoice-review",
+            model_version="7",
+            run_id=f"run-{index}",
+            manual_review_probability=0.8,
+            recommendation=recommend_from_probability(0.8),
+        )
+    persist_evidence_records(db_path, [_record(1), _record(2), _record(3)])
+    create_evidence_batch(db_path, [1, 2])
+
+    with pytest.raises(EvidencePersistenceError, match="already belongs"):
+        create_evidence_batch(db_path, [1, 3])
+    with _connect(db_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM evidence_batches").fetchone()[0] == 1
+
+
+def test_evidence_batch_successor_migration_has_foreign_keys_and_origin_index(tmp_path) -> None:
+    db_path = tmp_path / "invoiceops.db"
+
+    assert run_migrations(db_path) == 9
+    with _connect(db_path) as connection:
+        columns = connection.execute("PRAGMA table_info(evidence_batch_successors)").fetchall()
+        foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(evidence_batch_successors)"
+        ).fetchall()
+        indexes = connection.execute("PRAGMA index_list(evidence_batch_successors)").fetchall()
+
+    assert [column["name"] for column in columns] == [
+        "origin_batch_id",
+        "successor_batch_id",
+        "created_at",
+    ]
+    assert {key["from"] for key in foreign_keys} == {"origin_batch_id", "successor_batch_id"}
+    assert "idx_evidence_batch_successors_origin" in {index["name"] for index in indexes}
+
+
 def test_evidence_batch_migration_adds_batch_tables_and_foreign_keys(tmp_path) -> None:
     db_path = tmp_path / "invoiceops.db"
 
-    assert run_migrations(db_path) == 8
+    assert run_migrations(db_path) == 9
 
     with _connect(db_path) as connection:
         batches = connection.execute("PRAGMA table_info(evidence_batches)").fetchall()
@@ -463,7 +541,7 @@ def test_evidence_anchor_migration_is_additive_and_preserves_verified_batch_stat
 ) -> None:
     db_path = tmp_path / "invoiceops.db"
 
-    assert run_migrations(db_path) == 8
+    assert run_migrations(db_path) == 9
 
     with _connect(db_path) as connection:
         connection.execute(

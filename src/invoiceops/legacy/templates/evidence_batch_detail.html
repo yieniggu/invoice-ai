@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Evidence batch | InvoiceOps{% endblock %}
+{% block content %}
+{% if not batch %}
+<section class="card"><h1>{{ error }}</h1><a href="/evidence/batches">Back to evidence batches</a></section>
+{% else %}
+<a class="back-link" href="/evidence/batches">Back to evidence batches</a>
+<div class="page-heading"><div><p class="eyebrow">Evidence batch {{ batch.id }}</p><h1>Batch verified</h1></div><span class="status">{{ batch.status }}</span></div>
+
+<section class="root-summary" aria-labelledby="root-summary-heading">
+  <p class="eyebrow">Sealed result</p>
+  <h2 id="root-summary-heading">Merkle root is valid</h2>
+  <p class="verification-statement">{% if root_matches_persisted %}Generated root matches persisted batch root.{% else %}Generated root does not match persisted batch root.{% endif %}</p>
+  <code class="full-hash">{{ batch.root_hash }}</code>
+  <dl class="detail-list"><div><dt>Evidence records</dt><dd>{{ batch.leaf_count }}</dd></div><div><dt>Policy</dt><dd>{{ batch.policy_version }}</dd></div></dl>
+</section>
+
+{% if predecessor %}<section class="lineage-callout"><p class="eyebrow">Snapshot lineage</p><h2>Successor of batch {{ predecessor["origin_batch_id"] }}</h2><p>The source batch remains immutable. This batch carries its evidence forward and adds new records, so it has its own root and proofs.</p><a href="/evidence/batches/{{ predecessor["origin_batch_id"] }}">Compare with source batch {{ predecessor["origin_batch_id"] }}</a></section>{% elif successors %}<section class="lineage-callout"><p class="eyebrow">Snapshot lineage</p><h2>This original batch is not edited</h2><p>Its root, proofs, and anchor remain valid. Later evidence lives in a new accumulated successor.</p><p>{% for successor in successors %}<a href="/evidence/batches/{{ successor["successor_batch_id"] }}">View successor batch {{ successor["successor_batch_id"] }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</p></section>{% endif %}
+
+<section class="card" aria-labelledby="sealed-heading">
+  <p class="eyebrow">Verification path</p>
+  <h2 id="sealed-heading">How this batch is sealed</h2>
+  <ol class="seal-steps">
+    <li><strong>Evidence Record data</strong><span>invoice and evaluation context, model decision, policy, and provenance</span></li>
+    <li><strong>Canonical payload</strong><span>the persisted, versioned representation of each record</span></li>
+    <li><strong>Keccak digest</strong><span>one leaf hash per canonical payload</span></li>
+    <li><strong>Pair hashes by level</strong><span>ordered pairs form parents until one root remains</span></li>
+    <li><strong>Merkle root</strong><span>the batch-wide integrity result shown above</span></li>
+    <li><strong>Anchor status</strong><span>an optional external registration, separate from root validity</span></li>
+  </ol>
+</section>
+
+<section class="card" aria-labelledby="tree-heading">
+  <p class="eyebrow">Batch structure</p>
+  <h2 id="tree-heading">Merkle tree</h2>
+  <p class="section-intro">Read from the root down to the Evidence Record leaves. Every hash can be expanded in place; combinations are generated server-side from the existing batch algorithm.</p>
+  <ol class="merkle-tree" aria-label="Merkle tree from root to evidence leaves">
+    {% for level in merkle_levels %}
+    <li class="tree-level {% if level.is_root %}tree-root-level{% endif %}">
+      <h3>{{ level.label }}</h3>
+      <ul class="tree-nodes">
+        {% for node in level.nodes %}
+        <li class="tree-node {% if level.is_root %}tree-root{% endif %}">
+          {% if node.item %}<a href="/invoices/{{ records_by_evaluation[node.item.evaluation_id].invoice_id }}">Evidence {{ node.item.evaluation_id }} · invoice {{ records_by_evaluation[node.item.evaluation_id].invoice_id }}</a>{% endif %}
+          {% if node.left_hash %}<p class="hash-equation"><strong>keccak256(left || right)</strong><span>left <code>{{ node.left_hash[:12] }}...</code> + right <code>{{ node.right_hash[:12] }}...</code>{% if node.duplicates_right %} (right duplicates the final hash){% endif %}</span></p>{% endif %}
+          <details class="hash-details" {% if level.is_root %}open{% endif %}><summary>{% if level.is_root %}Merkle root{% else %}Hash{% endif %}: <code>{{ node.hash[:16] }}...</code></summary><code class="full-hash">{{ node.hash }}</code></details>
+        </li>
+        {% endfor %}
+      </ul>
+    </li>
+    {% endfor %}
+  </ol>
+</section>
+
+<section class="card" aria-labelledby="sources-heading">
+  <p class="eyebrow">Leaf inputs</p>
+  <h2 id="sources-heading">Evidence sources</h2>
+  <p class="section-intro">These persisted fields are the source material for each leaf digest.</p>
+  <div class="evidence-sources">
+    {% for source in evidence_sources %}
+    {% set record = source.record %}
+    <details class="evidence-source"><summary><strong>Evidence source {{ record.evaluation_id }}</strong><span>Invoice {{ record.invoice_id }} · leaf <code>{{ batch.items[loop.index0].leaf_hash[:12] }}...</code></span></summary>
+      <dl class="evidence-fields">
+        <div><dt>Invoice</dt><dd>{{ record.invoice_id }}</dd></div><div><dt>Evaluation</dt><dd>{{ record.evaluation_id }} · {{ record.correlation_id }}</dd></div>
+        <div><dt>Score</dt><dd>{{ record.manual_review_probability }}</dd></div><div><dt>Recommendation</dt><dd>{{ record.recommendation }}</dd></div>
+        <div><dt>Policy</dt><dd>{{ record.policy_version }} at {{ record.policy_threshold }}</dd></div><div><dt>Reason</dt><dd>{{ record.reason }}</dd></div>
+        <div><dt>Model / run</dt><dd>{{ record.model_name }} v{{ record.model_version }} · {{ record.run_id }}</dd></div><div><dt>Source</dt><dd>{{ record.source }}</dd></div>
+        <div><dt>Dataset / schema</dt><dd>{{ record.provenance.dataset_version }} · {{ record.provenance.feature_schema_version }}</dd></div><div><dt>Git commit</dt><dd class="copyable">{{ record.provenance.git_commit }}</dd></div>
+        <div><dt>Evaluation timestamp</dt><dd>{{ record.evaluation_created_at }}</dd></div><div><dt>Evidence contract</dt><dd>{{ record.contract_version }}</dd></div>
+      </dl>
+      <h4>Canonical payload (persisted)</h4><p class="payload-note">This exact stored payload was hashed with Keccak-256 to produce the leaf.</p><pre class="canonical-payload">{{ source.canonical_payload }}</pre>
+    </details>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="card" aria-labelledby="anchor-heading"><p class="eyebrow">Optional external registration</p><h2 id="anchor-heading">{% if anchor and anchor["status"] == "verified" %}Root is anchored{% else %}Root is not anchored{% endif %}</h2>{% if anchor %}<dl class="detail-list"><div><dt>Anchor status</dt><dd>{{ anchor["status"] }}</dd></div><div><dt>Chain</dt><dd>{{ anchor["chain_id"] }}</dd></div><div><dt>Contract</dt><dd class="copyable">{{ anchor["contract_address"] }}</dd></div><div><dt>Transaction</dt><dd class="copyable">{{ anchor["transaction_hash"] or "Unavailable" }}</dd></div><div><dt>Block / gas</dt><dd>{{ anchor["block_number"] or "Unavailable" }} / {{ anchor["gas_used"] or "Unavailable" }}</dd></div></dl>{% if anchor["status"] in ["ambiguous", "failed"] %}<p role="status">No automatic retry is available. Reconcile this lifecycle before any further action.</p>{% endif %}{% else %}<p>Merkle root validity is already verified above. An anchor only records that root on the supported local Anvil chain.</p><form action="/evidence/batches/{{ batch.id }}/anchor/request" method="post"><input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}"><button type="submit">Request local anchor confirmation</button></form>{% endif %}</section>
+
+<details class="technical-details"><summary>Technical details</summary><ol>{% for item in batch.items %}{% set check = checks[loop.index0] %}<li><strong>Evidence {{ item.evaluation_id }}</strong><code>{{ item.leaf_hash }}</code><span>evidence {{ check.canonical_hash_valid }}, leaf {{ check.evidence_leaf_valid }}, proof {{ check.proof_valid }}, batch {{ check.batch_valid }}, root on-chain {{ check.root_on_chain }}</span><ol class="proof">{% for step in item.proof %}<li>{{ step[0] }} input <code>{{ step[1] }}</code></li>{% endfor %}</ol></li>{% endfor %}</ol></details>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+{% endif %}
+{% endblock %}

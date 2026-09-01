@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block title %}Confirm local anchor | InvoiceOps{% endblock %}
+{% block content %}
+<section class="card"><p class="eyebrow">Step 2 of 2</p><h1>Confirm local Anvil anchor</h1><p>This confirmation sends one irreversible local transaction. Verify the fixed target below before continuing.</p><dl class="detail-list"><div><dt>Batch</dt><dd>{{ batch.id }}</dd></div><div><dt>Root</dt><dd class="copyable">{{ batch.root_hash }}</dd></div><div><dt>Chain ID</dt><dd>{{ preflight.chain_id }}</dd></div><div><dt>Contract</dt><dd class="copyable">{{ preflight.contract_address }}</dd></div><div><dt>Signer</dt><dd class="copyable">{{ preflight.signer }}</dd></div></dl><form action="/evidence/batches/{{ batch.id }}/anchor/confirm" method="post"><input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}"><input type="hidden" name="challenge_token" value="{{ challenge_token }}"><button type="submit">Confirm and send one local transaction</button></form><p><a href="/evidence/batches/{{ batch.id }}">Cancel</a></p></section>
+{% endblock %}

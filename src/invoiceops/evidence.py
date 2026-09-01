@@ -23,9 +23,13 @@ from invoiceops.legacy.db import (
     list_model_evaluation_records,
 )
 from invoiceops.legacy.db import get_evidence_batch as _get_evidence_batch_row
+from invoiceops.legacy.db import get_evidence_batch_predecessor as _get_evidence_batch_predecessor
 from invoiceops.legacy.db import get_evidence_hash as _get_evidence_hash_row
 from invoiceops.legacy.db import get_evidence_record as _get_evidence_row
 from invoiceops.legacy.db import list_evidence_batch_items as _list_evidence_batch_item_rows
+from invoiceops.legacy.db import (
+    list_evidence_record_batch_memberships as _list_evidence_record_batch_memberships,
+)
 from invoiceops.legacy.db import list_evidence_records as _list_evidence_rows
 
 EVIDENCE_CONTRACT_VERSION = "invoice-evidence-v1"
@@ -64,6 +68,23 @@ class EvidenceBatch:
     leaf_count: int
     status: str
     items: list[EvidenceBatchItem]
+    created_at: str = ""
+    source_batch_id: int | None = None
+
+
+@dataclass(frozen=True)
+class MerkleTreeLevel:
+    hashes: list[str]
+    duplicates_final_hash: bool
+
+
+@dataclass(frozen=True)
+class MerkleTree:
+    levels: list[MerkleTreeLevel]
+
+    @property
+    def root(self) -> str:
+        return self.levels[-1].hashes[0]
 
 
 def _canonical_value(value: object) -> object:
@@ -164,9 +185,20 @@ def _merkle_levels(leaves: list[str], *, sort_leaves: bool = True) -> list[list[
     return levels
 
 
+def merkle_tree(leaves: list[str], *, sort_leaves: bool = True) -> MerkleTree:
+    """Return read-only levels produced by the invoice Merkle algorithm."""
+    levels = _merkle_levels(leaves, sort_leaves=sort_leaves)
+    return MerkleTree(
+        [
+            MerkleTreeLevel(hashes=level, duplicates_final_hash=index < len(levels) - 1 and len(level) % 2 == 1)
+            for index, level in enumerate(levels)
+        ]
+    )
+
+
 def merkle_root(leaves: list[str]) -> str:
     """Return the invoice-merkle-v1 root for digest leaves, sorted deterministically."""
-    return _merkle_levels(leaves)[-1][0]
+    return merkle_tree(leaves).root
 
 
 def _merkle_proof(
@@ -487,15 +519,22 @@ def backfill_canonical_evidence_records(
     return result
 
 
-def create_evidence_batch(
-    db_path: str | Path | None, evaluation_ids: list[int]
-) -> EvidenceBatch:
+def _validate_new_evaluation_ids(evaluation_ids: list[int]) -> None:
     if not evaluation_ids:
         raise EvidencePersistenceError("at least one evaluation_id is required")
     if any(isinstance(evaluation_id, bool) or not isinstance(evaluation_id, int) for evaluation_id in evaluation_ids):
         raise EvidencePersistenceError("evaluation_ids must be integers")
     if len(set(evaluation_ids)) != len(evaluation_ids):
         raise EvidencePersistenceError("evaluation_ids must be unique")
+
+
+def _create_evidence_batch(
+    db_path: str | Path | None,
+    evaluation_ids: list[int],
+    *,
+    source_batch_id: int | None = None,
+    new_evaluation_ids: list[int] | None = None,
+) -> EvidenceBatch:
 
     items: list[EvidenceBatchItem] = []
     for leaf_index, evaluation_id in enumerate(sorted(evaluation_ids)):
@@ -534,10 +573,35 @@ def create_evidence_batch(
                 )
                 for item in items
             ],
+            source_batch_id=source_batch_id,
+            new_evaluation_ids=new_evaluation_ids,
         )
     except sqlite3.IntegrityError as error:
-        raise EvidencePersistenceError("evidence batch could not be persisted") from error
+        raise EvidencePersistenceError(str(error)) from error
     return get_evidence_batch(db_path, batch_id)
+
+
+def create_evidence_batch(db_path: str | Path | None, evaluation_ids: list[int]) -> EvidenceBatch:
+    _validate_new_evaluation_ids(evaluation_ids)
+    return _create_evidence_batch(db_path, sorted(evaluation_ids), new_evaluation_ids=evaluation_ids)
+
+
+def create_evidence_batch_successor(
+    db_path: str | Path | None, source_batch_id: int, new_evaluation_ids: list[int]
+) -> EvidenceBatch:
+    if isinstance(source_batch_id, bool) or not isinstance(source_batch_id, int) or source_batch_id <= 0:
+        raise EvidencePersistenceError("source_batch_id must be a positive integer")
+    _validate_new_evaluation_ids(new_evaluation_ids)
+    origin = get_evidence_batch(db_path, source_batch_id)
+    origin_ids = [item.evaluation_id for item in origin.items]
+    if set(origin_ids).intersection(new_evaluation_ids):
+        raise EvidencePersistenceError("evidence record already belongs to the source batch")
+    return _create_evidence_batch(
+        db_path,
+        [*origin_ids, *sorted(new_evaluation_ids)],
+        source_batch_id=source_batch_id,
+        new_evaluation_ids=new_evaluation_ids,
+    )
 
 
 def get_evidence_batch(db_path: str | Path | None, batch_id: int) -> EvidenceBatch:
@@ -572,6 +636,12 @@ def get_evidence_batch(db_path: str | Path | None, batch_id: int) -> EvidenceBat
         batch_row["leaf_count"],
         batch_row["status"],
         items,
+        batch_row["created_at"],
+        (
+            predecessor["origin_batch_id"]
+            if (predecessor := _get_evidence_batch_predecessor(db_path, batch_id)) is not None
+            else None
+        ),
     )
     if (
         batch.policy_version != MERKLE_POLICY_VERSION
@@ -582,6 +652,16 @@ def get_evidence_batch(db_path: str | Path | None, batch_id: int) -> EvidenceBat
     ):
         raise EvidencePersistenceError("stored evidence batch is not verified")
     return batch
+
+
+def get_latest_evidence_batch_for_evaluation(
+    db_path: str | Path | None, evaluation_id: int
+) -> EvidenceBatch | None:
+    """Return the most recent persisted batch containing an evidence record."""
+    for membership in _list_evidence_record_batch_memberships(db_path):
+        if membership["evaluation_id"] == evaluation_id:
+            return get_evidence_batch(db_path, membership["batch_id"])
+    return None
 
 
 def main() -> None:

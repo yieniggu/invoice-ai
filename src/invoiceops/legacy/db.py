@@ -46,11 +46,17 @@ class InvalidInvoiceTransition(Exception):
     """Raised when a decision is applied to an invoice outside PENDING."""
 
 
-def _resolve_db_path(db_path: str | Path | None) -> Path:
+def resolve_db_path(db_path: str | Path | None) -> Path:
+    """Resolve the configured SQLite path without opening or creating it."""
     if db_path is not None:
         return Path(db_path)
     path = Path(os.environ.get("INVOICEOPS_DB_PATH", DEFAULT_DB_PATH))
     return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def _resolve_db_path(db_path: str | Path | None) -> Path:
+    """Compatibility wrapper for internal callers pending their public migration."""
+    return resolve_db_path(db_path)
 
 
 def _connect(db_path: str | Path | None) -> sqlite3.Connection:
@@ -338,6 +344,63 @@ def insert_model_evaluation(
         )
 
 
+def get_or_insert_model_evaluation(
+    db_path: str | Path | None,
+    invoice_id: str,
+    *,
+    correlation_id: str,
+    recommendation: Recommendation,
+    model_name: str,
+    model_version: str,
+    run_id: str,
+    manual_review_probability: float,
+) -> sqlite3.Row:
+    created_at = datetime.now(UTC).isoformat()
+    with _connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if (
+            connection.execute("SELECT 1 FROM invoices WHERE invoice_id = ?", (invoice_id,)).fetchone()
+            is None
+        ):
+            raise LookupError(f"Invoice not found: {invoice_id}")
+        existing = connection.execute(
+            """
+            SELECT * FROM model_evaluations
+            WHERE invoice_id = ? AND correlation_id = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (invoice_id, correlation_id),
+        ).fetchone()
+        if existing is not None:
+            return existing
+        connection.execute(
+            """
+            INSERT INTO model_evaluations (
+                invoice_id, correlation_id, model_name, model_version, run_id,
+                manual_review_probability, policy_version, policy_threshold,
+                recommendation, source, reason, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                invoice_id,
+                correlation_id,
+                model_name,
+                model_version,
+                run_id,
+                manual_review_probability,
+                recommendation.policy_version,
+                recommendation.threshold,
+                recommendation.decision.value,
+                recommendation.source,
+                recommendation.reason,
+                created_at,
+            ),
+        )
+        return connection.execute(
+            "SELECT * FROM model_evaluations WHERE id = last_insert_rowid()"
+        ).fetchone()
+
+
 def list_model_evaluations(db_path: str | Path | None, invoice_id: str) -> list[sqlite3.Row]:
     with _connect(db_path) as connection:
         return connection.execute(
@@ -348,6 +411,41 @@ def list_model_evaluations(db_path: str | Path | None, invoice_id: str) -> list[
             """,
             (invoice_id,),
         ).fetchall()
+
+
+def get_evidence_context(db_path: str | Path | None, evaluation_id: int) -> sqlite3.Row | None:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            """
+            SELECT evidence_records.contract_version, evidence_records.digest_hex,
+                   evidence_batches.id AS batch_id, evidence_batches.root_hash,
+                   evidence_batches.status AS batch_status, evidence_batches.created_at AS batch_created_at,
+                   evidence_batch_anchors.chain_id, evidence_batch_anchors.contract_address,
+                   evidence_batch_anchors.transaction_hash, evidence_batch_anchors.block_number,
+                   evidence_batch_anchors.gas_used, evidence_batch_anchors.submitted_at,
+                   evidence_batch_anchors.anchored_at, evidence_batch_anchors.status AS anchor_status
+            FROM evidence_records
+            LEFT JOIN evidence_batch_items ON evidence_batch_items.evaluation_id = evidence_records.evaluation_id
+                AND evidence_batch_items.evidence_contract_version = evidence_records.contract_version
+            LEFT JOIN evidence_batches ON evidence_batches.id = evidence_batch_items.batch_id
+            LEFT JOIN evidence_batch_anchors ON evidence_batch_anchors.batch_id = evidence_batches.id
+            WHERE evidence_records.evaluation_id = ?
+            ORDER BY evidence_batches.id DESC
+            LIMIT 1
+            """,
+            (evaluation_id,),
+        ).fetchone()
+
+
+def get_persisted_canonical_payload(
+    db_path: str | Path | None, evaluation_id: int
+) -> str | None:
+    """Return the canonical payload stored with an evidence record, without recomputing it."""
+    with _connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT canonical_payload FROM evidence_records WHERE evaluation_id = ?", (evaluation_id,)
+        ).fetchone()
+    return None if row is None else row["canonical_payload"]
 
 
 def get_model_evaluation(db_path: str | Path | None, evaluation_id: int) -> sqlite3.Row | None:
@@ -426,9 +524,35 @@ def insert_evidence_batch(
     leaf_count: int,
     created_at: str,
     items: list[tuple[int, str, int, str, str]],
+    source_batch_id: int | None = None,
+    new_evaluation_ids: list[int] | None = None,
 ) -> int:
     with _connect(db_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
+        new_ids = new_evaluation_ids if new_evaluation_ids is not None else [item[0] for item in items]
+        if source_batch_id is not None:
+            source = connection.execute(
+                "SELECT id FROM evidence_batches WHERE id = ?", (source_batch_id,)
+            ).fetchone()
+            if source is None:
+                raise sqlite3.IntegrityError("source evidence batch does not exist")
+            source_ids = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT evaluation_id FROM evidence_batch_items WHERE batch_id = ?",
+                    (source_batch_id,),
+                )
+            }
+            if source_ids.intersection(new_ids):
+                raise sqlite3.IntegrityError("evidence record already belongs to the source batch")
+        if new_ids:
+            placeholders = ", ".join("?" for _ in new_ids)
+            reused = connection.execute(
+                f"SELECT evaluation_id FROM evidence_batch_items WHERE evaluation_id IN ({placeholders}) LIMIT 1",
+                new_ids,
+            ).fetchone()
+            if reused is not None:
+                raise sqlite3.IntegrityError("evidence record already belongs to an evidence batch")
         cursor = connection.execute(
             """
             INSERT INTO evidence_batches (
@@ -446,6 +570,14 @@ def insert_evidence_batch(
             """,
             [(batch_id, *item) for item in items],
         )
+        if source_batch_id is not None:
+            connection.execute(
+                """
+                INSERT INTO evidence_batch_successors (origin_batch_id, successor_batch_id, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (source_batch_id, batch_id, created_at),
+            )
     return batch_id
 
 
@@ -454,6 +586,68 @@ def get_evidence_batch(db_path: str | Path | None, batch_id: int) -> sqlite3.Row
         return connection.execute(
             "SELECT * FROM evidence_batches WHERE id = ?", (batch_id,)
         ).fetchone()
+
+
+def list_evidence_batches(db_path: str | Path | None) -> list[sqlite3.Row]:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            """
+            SELECT evidence_batches.*, evidence_batch_anchors.status AS anchor_status
+            FROM evidence_batches
+            LEFT JOIN evidence_batch_anchors ON evidence_batch_anchors.batch_id = evidence_batches.id
+            ORDER BY evidence_batches.id DESC
+            """
+        ).fetchall()
+
+
+def get_evidence_batch_predecessor(db_path: str | Path | None, batch_id: int) -> sqlite3.Row | None:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            """
+            SELECT origin_batch_id FROM evidence_batch_successors
+            WHERE successor_batch_id = ?
+            """,
+            (batch_id,),
+        ).fetchone()
+
+
+def list_evidence_batch_successors(db_path: str | Path | None, batch_id: int) -> list[sqlite3.Row]:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            """
+            SELECT successor_batch_id FROM evidence_batch_successors
+            WHERE origin_batch_id = ? ORDER BY successor_batch_id
+            """,
+            (batch_id,),
+        ).fetchall()
+
+
+def list_evidence_record_batch_memberships(db_path: str | Path | None) -> list[sqlite3.Row]:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            """
+            SELECT evaluation_id, batch_id FROM evidence_batch_items
+            ORDER BY evaluation_id, batch_id DESC
+            """
+        ).fetchall()
+
+
+def list_evidence_batches_for_invoice(
+    db_path: str | Path | None, invoice_id: str
+) -> list[sqlite3.Row]:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            """
+            SELECT DISTINCT evidence_batches.*, evidence_batch_anchors.status AS anchor_status
+            FROM evidence_batches
+            JOIN evidence_batch_items ON evidence_batch_items.batch_id = evidence_batches.id
+            JOIN model_evaluations ON model_evaluations.id = evidence_batch_items.evaluation_id
+            LEFT JOIN evidence_batch_anchors ON evidence_batch_anchors.batch_id = evidence_batches.id
+            WHERE model_evaluations.invoice_id = ?
+            ORDER BY evidence_batches.id DESC
+            """,
+            (invoice_id,),
+        ).fetchall()
 
 
 def list_evidence_batch_items(db_path: str | Path | None, batch_id: int) -> list[sqlite3.Row]:
@@ -578,6 +772,8 @@ def set_evidence_batch_anchor_transaction(
 def reset_db(db_path: str | Path | None = None) -> None:
     with _connect(db_path) as connection:
         connection.execute("DROP TABLE IF EXISTS evidence_batch_anchors")
+        # The lineage table references both batches, so it must be removed first.
+        connection.execute("DROP TABLE IF EXISTS evidence_batch_successors")
         connection.execute("DROP TABLE IF EXISTS evidence_batch_items")
         connection.execute("DROP TABLE IF EXISTS evidence_batches")
         connection.execute("DROP TABLE IF EXISTS evidence_records")

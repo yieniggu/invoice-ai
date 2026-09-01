@@ -253,12 +253,41 @@ def test_merkle_proof_verifies_and_rejects_a_manipulated_sibling() -> None:
 
 
 def test_merkle_policy_duplicates_the_final_leaf_for_an_odd_batch() -> None:
-    from invoiceops.evidence import MERKLE_POLICY_VERSION, merkle_root
+    from invoiceops.evidence import MERKLE_POLICY_VERSION, merkle_root, merkle_tree
 
     odd_leaves = [MERKLE_LEAF_A, MERKLE_LEAF_B, MERKLE_LEAF_C]
+    tree = merkle_tree(odd_leaves, sort_leaves=False)
 
     assert MERKLE_POLICY_VERSION == "invoice-merkle-v1"
     assert merkle_root(odd_leaves) == merkle_root([*odd_leaves, MERKLE_LEAF_C])
+    assert tree.root == merkle_root(odd_leaves)
+    assert [level.duplicates_final_hash for level in tree.levels] == [True, False, False]
+    assert tree.levels[0].hashes == odd_leaves
+
+
+def test_latest_evidence_batch_for_evaluation_reuses_the_newest_membership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invoiceops import evidence
+
+    newest_batch = object()
+    monkeypatch.setattr(
+        evidence,
+        "_list_evidence_record_batch_memberships",
+        lambda _: [
+            {"evaluation_id": 3, "batch_id": 12},
+            {"evaluation_id": 3, "batch_id": 10},
+            {"evaluation_id": 2, "batch_id": 11},
+        ],
+    )
+    monkeypatch.setattr(
+        evidence,
+        "get_evidence_batch",
+        lambda _, batch_id: newest_batch if batch_id == 12 else pytest.fail("wrong batch selected"),
+    )
+
+    assert evidence.get_latest_evidence_batch_for_evaluation("ignored.db", 3) is newest_batch
+    assert evidence.get_latest_evidence_batch_for_evaluation("ignored.db", 1) is None
 
 
 def test_merkle_root_changes_when_a_leaf_changes() -> None:

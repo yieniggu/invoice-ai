@@ -10,6 +10,7 @@
     <header class="site-header">
       <a class="brand" href="/invoices">InvoiceOps</a>
       {% if request.session.get("username") %}
+      <nav aria-label="Primary"><a href="/evidence/batches">Evidence batches</a></nav>
       <form action="/logout" method="post"><input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}"><button class="link-button" type="submit">Log out</button></form>
       {% endif %}
     </header>
