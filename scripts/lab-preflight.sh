@@ -11,8 +11,7 @@ command -v docker >/dev/null || { printf 'docker is required\n' >&2; exit 1; }
 docker compose version >/dev/null
 
 if [ "$profile" = "production" ]; then
-  for name in INVOICEOPS_IMAGE INVOICEOPS_DB_PATH INVOICEOPS_DATA_VOLUME INVOICEOPS_SESSION_SECRET \
-    PUBLIC_HOST TLS_EMAIL; do
+  for name in INVOICEOPS_IMAGE INVOICEOPS_DB_PATH INVOICEOPS_DATA_VOLUME INVOICEOPS_SESSION_SECRET; do
     [ -n "${!name:-}" ] || { printf 'Missing required production variable: %s\n' "$name" >&2; exit 1; }
   done
 fi

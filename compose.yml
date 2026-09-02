@@ -241,14 +241,9 @@ services:
   proxy-production:
     profiles: ["production"]
     image: caddy:2.9-alpine
-    ports: ["80:80", "443:443"]
-    environment:
-      PUBLIC_HOST: ${PUBLIC_HOST:-}
-      TLS_EMAIL: ${TLS_EMAIL:-}
+    ports: ["80:80"]
     volumes:
       - ./Caddyfile.production:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
     depends_on:
       portal-production:
         condition: service_healthy
@@ -262,7 +257,5 @@ volumes:
   invoice-data:
   mlflow-postgres:
   mlflow-artifacts:
-  caddy-data:
-  caddy-config:
   mlflow-production-postgres:
   mlflow-production-artifacts:

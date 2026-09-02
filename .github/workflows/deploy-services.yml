@@ -29,8 +29,6 @@ jobs:
           INVOICEOPS_DB_PATH: /app/var/invoiceops.db
           INVOICEOPS_DATA_VOLUME: /srv/invoiceops/var
           INVOICEOPS_SESSION_SECRET: placeholder-for-validation-only
-          PUBLIC_HOST: portal.example.invalid
-          TLS_EMAIL: operations@example.invalid
         run: ./scripts/lab-preflight.sh production
       - name: Validate immutable image reference
         id: image

@@ -7,11 +7,30 @@ ROOT = Path(__file__).parents[2]
 
 
 def test_caddy_only_publishes_the_portal() -> None:
-    for caddyfile in (ROOT / "Caddyfile.lab", ROOT / "Caddyfile.production"):
-        contents = caddyfile.read_text()
+    lab_caddyfile = (ROOT / "Caddyfile.lab").read_text()
+    production_caddyfile = (ROOT / "Caddyfile.production").read_text()
+    compose = (ROOT / "compose.yml").read_text()
+
+    for contents in (lab_caddyfile, production_caddyfile):
         assert "reverse_proxy mlflow" not in contents
         assert "mlflow" not in contents.lower()
         assert "reverse_proxy portal" in contents
+
+    assert ":80 {" in production_caddyfile
+    assert "tls " not in production_caddyfile
+    assert 'ports: ["80:80"]' in compose
+    assert '"443:443"' not in compose
+    lab_environment = (ROOT / "config" / "lab.env.example").read_text()
+    assert "INVOICEOPS_DB_PATH=/app/var/invoiceops.db" in lab_environment
+    assert "INVOICEOPS_DATA_VOLUME=/srv/invoiceops/var" in lab_environment
+    for deployment_file in (
+        ROOT / "scripts" / "lab-preflight.sh",
+        ROOT / ".github" / "workflows" / "deploy-services.yml",
+        ROOT / "config" / "lab.env.example",
+    ):
+        contents = deployment_file.read_text()
+        assert "PUBLIC_HOST" not in contents
+        assert "TLS_EMAIL" not in contents
 
 
 def test_mlflow_cannot_be_reexposed_by_the_deployment_configuration() -> None:
@@ -291,8 +310,6 @@ def test_production_deploy_rejects_a_missing_champion_before_every_compose_up(
             "INVOICEOPS_DB_PATH": "/srv/invoiceops/invoiceops.db",
             "INVOICEOPS_DATA_VOLUME": "/srv/invoiceops",
             "INVOICEOPS_SESSION_SECRET": "test-session-secret",
-            "PUBLIC_HOST": "invoiceops.test",
-            "TLS_EMAIL": "operator@invoiceops.test",
             "DOCKER_LOG": str(log),
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
         },
@@ -352,8 +369,6 @@ def test_production_deploy_starts_only_serving_services_after_a_valid_champion(
             "INVOICEOPS_DB_PATH": "/srv/invoiceops/invoiceops.db",
             "INVOICEOPS_DATA_VOLUME": "/srv/invoiceops",
             "INVOICEOPS_SESSION_SECRET": "test-session-secret",
-            "PUBLIC_HOST": "invoiceops.test",
-            "TLS_EMAIL": "operator@invoiceops.test",
             "DOCKER_LOG": str(log),
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
         },
