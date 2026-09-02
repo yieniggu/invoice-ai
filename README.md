@@ -72,21 +72,6 @@ curl --fail --silent --show-error http://127.0.0.1:8000/api/health
 
 Abra `http://127.0.0.1:8000/login` e ingrese con las credenciales demo definidas en su `.env` local. No copie credenciales fuera del entorno de demostración. `INVOICEOPS_MODEL_API_URL` debe apuntar a `:8001`, nunca al Portal.
 
-## Recorrido docente exacto
-
-| Orden | Superficie | Resultado observable | Acción predominante |
-|---:|---|---|---|
-| 1 | `01_data_and_baseline.ipynb` | Dataset, split temporal y baseline. | Dataset si falta. |
-| 2 | `02_models_and_metrics.ipynb` | Métricas de Dummy, Logistic y Random Forest. | Temporal local efímero. |
-| 3 | `03_mlflow_and_model_selection.ipynb` | Runs reales en `invoice-risk`. | Puede escribir runs. |
-| 4 | `04_registry_gate_and_promotion.ipynb` | Gate, Model Versions y alias `champion`. | Escribe Registry. |
-| 5 | `05_serving_policy_and_audit.ipynb` | `/health`, `/predict`, Policy y `model_evaluations`. | Escribe Registry/SQLite en celdas señaladas. |
-| 6 | Portal | Factura -> evaluación -> Evidence Record y navegación de batches. | Escribe al evaluar o crear batches. |
-| 7 | Evidence/Merkle | Evidence Records, hojas, root, proofs y sucesores. | Mezcla inspección y SQLite. |
-| 8 | Anvil | Contrato local y anchor del root persistido. | Deployment/transacción. |
-| 9 | Verificación | Evidence -> leaf -> proof -> root -> cadena. | Solo lectura. |
-
-El detalle didáctico, equivalentes técnicos y el orden de celdas está en [notebooks/README.md](notebooks/README.md). Los notebooks son una guía visible; el CLI y las APIs indicadas en los runbooks son los contratos técnicos equivalentes.
 
 ## Conceptos que deben quedar claros
 
@@ -125,7 +110,7 @@ Consulte el procedimiento y la clasificación completa de comandos en [Clase 3](
 
 No documente, imprima ni pegue secretos, claves privadas o mnemonic. Anvil usa su cuenta desbloqueada local a través de la API; no se entrega una clave al CLI.
 
-## Runtime Compose para el aula
+## Runtime Compose
 
 Ejecute estos comandos desde la raíz del repositorio. El perfil `classroom` levanta el recorrido integrado con datos persistentes en volúmenes Docker.
 
