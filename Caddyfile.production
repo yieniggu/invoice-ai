@@ -1,0 +1,4 @@
+{$PUBLIC_HOST} {
+    tls {$TLS_EMAIL}
+    reverse_proxy portal-production:8000
+}

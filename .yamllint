@@ -1,0 +1,7 @@
+---
+extends: default
+
+rules:
+  line-length:
+    # Pinned action hashes and single shell invocations remain readable as one command.
+    max: 280

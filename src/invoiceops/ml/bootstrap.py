@@ -39,6 +39,17 @@ class BootstrapResult:
     model_api_restart_required: bool
 
 
+@dataclass(frozen=True)
+class ModelBootstrapResult:
+    dataset: str
+    candidate: str
+    gate: str
+    registry: str
+    champion: str
+    model_version: str
+    run_id: str
+
+
 def ensure_tracking_available() -> MlflowClient:
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
     if not tracking_uri or urlparse(tracking_uri).scheme not in {"http", "https"}:
@@ -88,18 +99,23 @@ def _run_stage(stage: str, operation):
         raise BootstrapError(f"{stage}: {error}") from error
 
 
-def bootstrap_local(db_path: Path | None = None) -> BootstrapResult:
-    database = db_path or Path("var/local-demo/invoiceops.db")
-    demo_root = ensure_demo_root(database.parent)
-    database = demo_root / database.name
+def verify_champion(client: MlflowClient) -> tuple[str, str]:
+    """Confirm the alias resolves to a ready, traceable registered model."""
+    version = _run_stage(
+        "Champion verification failed",
+        lambda: client.get_model_version_by_alias("invoice-review", "champion"),
+    )
+    if version.status != "READY" or not version.run_id or not str(version.version):
+        raise BootstrapError("Champion is not a ready, traceable invoice-review model")
+    return str(version.version), version.run_id
+
+
+def bootstrap_model(dataset_root: Path) -> ModelBootstrapResult:
+    """Create or reuse the local-lab champion without starting serving processes."""
     client = ensure_tracking_available()
     dataset_dir, dataset_action = _run_stage(
-        "Dataset precondition failed",
-        lambda: ensure_canonical_dataset(output_root=demo_root / "data"),
+        "Dataset precondition failed", lambda: ensure_canonical_dataset(output_root=dataset_root)
     )
-    migrations_pending = _run_stage("SQLite migration failed", lambda: run_migrations(database))
-    _run_stage("SQLite seed failed", lambda: seed_invoices(database))
-
     run_id = _run_stage(
         "MLflow candidate lookup failed", lambda: find_compatible_random_forest_run(client, dataset_dir)
     )
@@ -114,24 +130,47 @@ def bootstrap_local(db_path: Path | None = None) -> BootstrapResult:
         raise BootstrapError(
             f"Candidate {run_id} failed Gate: recall={recall:.6f}, precision={precision:.6f}; not promoted"
         )
-
     version, registry_action = _run_stage("Registry registration failed", lambda: ensure_registered_version(run_id))
     champion_action = _run_stage("Champion promotion failed", lambda: ensure_champion(version, run_id))
-    return BootstrapResult(
+    champion_version, champion_run_id = verify_champion(client)
+    if (champion_version, champion_run_id) != (version, run_id):
+        raise BootstrapError("Champion does not resolve to the approved registered model")
+    return ModelBootstrapResult(
         dataset=dataset_action,
-        migrations_pending=migrations_pending,
-        sqlite="migrated_and_seeded",
         candidate=f"{candidate_action}:{run_id}",
         gate=f"passed:recall={recall:.6f},precision={precision:.6f}",
         registry=f"{registry_action}:{version}",
         champion=champion_action,
-        model_api_restart_required=champion_action != "unchanged",
+        model_version=champion_version,
+        run_id=champion_run_id,
+    )
+
+
+def bootstrap_local(db_path: Path | None = None) -> BootstrapResult:
+    database = db_path or Path("var/local-demo/invoiceops.db")
+    demo_root = ensure_demo_root(database.parent)
+    database = demo_root / database.name
+    migrations_pending = _run_stage("SQLite migration failed", lambda: run_migrations(database))
+    _run_stage("SQLite seed failed", lambda: seed_invoices(database))
+    model = bootstrap_model(demo_root / "data")
+    return BootstrapResult(
+        dataset=model.dataset,
+        migrations_pending=migrations_pending,
+        sqlite="migrated_and_seeded",
+        candidate=model.candidate,
+        gate=model.gate,
+        registry=model.registry,
+        champion=model.champion,
+        model_api_restart_required=model.champion != "unchanged",
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bootstrap the local SQLite and MLflow demo state.")
     parser.add_argument("--db-path", type=Path)
+    parser.add_argument("--model-only", action="store_true")
+    parser.add_argument("--dataset-root", type=Path)
+    parser.add_argument("--verify-champion", action="store_true")
     parser.add_argument(
         "--initialize-demo-root",
         action="store_true",
@@ -146,7 +185,18 @@ def main() -> None:
         print(f"Initialized local demo root: {initialize_demo_root(root)}")
         return
     try:
-        result = bootstrap_local(args.db_path)
+        if args.verify_champion:
+            if args.model_only or args.dataset_root is not None or args.db_path is not None:
+                raise BootstrapError("--verify-champion cannot be combined with bootstrap options")
+            version, run_id = verify_champion(ensure_tracking_available())
+            print(json.dumps({"model_version": version, "run_id": run_id}, sort_keys=True))
+            return
+        if args.model_only:
+            result = bootstrap_model(args.dataset_root or Path("var/model-bootstrap-data"))
+        elif args.dataset_root is not None:
+            raise BootstrapError("--dataset-root requires --model-only")
+        else:
+            result = bootstrap_local(args.db_path)
     except BootstrapError as error:
         raise SystemExit(f"BOOTSTRAP FAILED: {error}") from error
     print(json.dumps(asdict(result), indent=2, sort_keys=True))

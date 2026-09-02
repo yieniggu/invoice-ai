@@ -1,0 +1,63 @@
+---
+name: release-model
+
+"on":
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub Environment approved for the private MLflow VM
+        required: true
+        type: environment
+      run_id:
+        description: MLflow run ID approved for release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    environment: ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Apply the gate and promote inside the private MLflow network
+        env:
+          GCP_VM_HOST: ${{ secrets.GCP_VM_HOST }}
+          GCP_VM_USER: ${{ vars.GCP_VM_USER }}
+          GCP_SSH_PRIVATE_KEY: ${{ secrets.GCP_SSH_PRIVATE_KEY }}
+          GCP_SSH_KNOWN_HOSTS: ${{ secrets.GCP_SSH_KNOWN_HOSTS }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -o pipefail
+          test -n "$GCP_VM_HOST"
+          test -n "$GCP_VM_USER"
+          test -n "$GCP_SSH_PRIVATE_KEY"
+          test -n "$GCP_SSH_KNOWN_HOSTS"
+          install -m 700 -d ~/.ssh
+          printf '%s' "$GCP_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$GCP_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          model_version="$(printf '%s\n' "$RUN_ID" | ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts "$GCP_VM_USER@$GCP_VM_HOST" '
+            set -euo pipefail
+            IFS= read -r run_id
+            set -a
+            . /etc/invoiceops/production.env
+            set +a
+            cd /srv/invoice-ai
+            ./scripts/release-production-model.sh "$run_id"
+          ' | awk -F= '/^MODEL_VERSION=/{print $2}')"
+          test -n "$model_version"
+          printf 'MODEL_VERSION=%s\n' "$model_version" >> "$GITHUB_ENV"
+      - name: Publish release evidence
+        run: |
+          {
+            echo '## Model release'
+            echo
+            echo "- Approved run: \`${{ inputs.run_id }}\`"
+            echo "- Promoted version: \`$MODEL_VERSION\`"
+            echo '- Gate, Registry and champion promotion: completed inside the private VM network'
+            echo '- Next required workflow: `deploy-services` with the approved immutable image'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,27 +1,268 @@
+---
 services:
-  legacy-web:
+  portal-lab:
+    profiles: ["manual", "local", "full-lab"]
     build: .
-    ports:
-      - "8000:8000"
+    ports: ["8000:8000"]
     environment:
       INVOICEOPS_MODE: demo
       INVOICEOPS_DB_PATH: /app/var/invoiceops.db
       INVOICEOPS_DEMO_USERNAME: analyst
       INVOICEOPS_DEMO_PASSWORD: demo-password
       INVOICEOPS_SESSION_SECRET: dev-only-change-me
-    volumes:
-      - invoice-data:/app/var
+      INVOICEOPS_MODEL_API_URL: http://model-api:8001
+    volumes: ["invoice-data:/app/var"]
     healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')",
-        ]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  model-api:
+    profiles: ["full-lab"]
+    build: .
+    command: ["uvicorn", "invoiceops.model_api.app:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow-lab:5000
+      INVOICEOPS_MODEL_URI: models:/invoice-review@champion
+    depends_on:
+      mlflow-lab:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  model-bootstrap:
+    profiles: ["full-lab-bootstrap"]
+    build: .
+    command: ["python", "-m", "invoiceops.ml.bootstrap", "--model-only", "--dataset-root", "/app/var/model-bootstrap-data"]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow-lab:5000
+    volumes: ["invoice-data:/app/var"]
+    depends_on:
+      mlflow-lab:
+        condition: service_healthy
+
+  postgres:
+    profiles: ["full-lab", "full-lab-bootstrap"]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: mlflow
+      POSTGRES_USER: mlflow
+      POSTGRES_PASSWORD: mlflow-lab-only
+    volumes: ["mlflow-postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlflow -d mlflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    profiles: ["full-lab", "full-lab-bootstrap"]
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: minio-lab
+      MINIO_ROOT_PASSWORD: minio-lab-password
+    volumes: ["mlflow-artifacts:/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    profiles: ["full-lab", "full-lab-bootstrap"]
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    entrypoint: ["/bin/sh", "-c"]
+    command: >-
+      until mc alias set lab http://minio:9000 minio-lab minio-lab-password; do sleep 1; done;
+      mc mb --ignore-existing lab/mlflow-artifacts
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  mlflow-lab:
+    profiles: ["full-lab", "full-lab-bootstrap"]
+    image: ghcr.io/mlflow/mlflow:v2.22.0
+    command: >-
+      mlflow server --host 0.0.0.0 --port 5000 --serve-artifacts
+      --backend-store-uri postgresql://mlflow:mlflow-lab-only@postgres:5432/mlflow
+      --artifacts-destination s3://mlflow-artifacts
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minio-lab
+      AWS_SECRET_ACCESS_KEY: minio-lab-password
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  proxy-lab:
+    profiles: ["full-lab"]
+    image: caddy:2.9-alpine
+    ports: ["8080:8080"]
+    volumes:
+      - ./Caddyfile.lab:/etc/caddy/Caddyfile:ro
+    depends_on:
+      portal-lab:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2019/config/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  portal-production:
+    profiles: ["production"]
+    image: ${INVOICEOPS_IMAGE:-invoiceops:unconfigured}
+    environment:
+      INVOICEOPS_MODE: secure
+      INVOICEOPS_DB_PATH: ${INVOICEOPS_DB_PATH:-/app/var/invoiceops.db}
+      INVOICEOPS_SESSION_SECRET: ${INVOICEOPS_SESSION_SECRET:-}
+      INVOICEOPS_MODEL_API_URL: http://model-api-production:8001
+    volumes:
+      - ${INVOICEOPS_DATA_VOLUME:-/srv/invoiceops-unconfigured}:/app/var
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  model-api-production:
+    profiles: ["production"]
+    image: ${INVOICEOPS_IMAGE:-invoiceops:unconfigured}
+    command: ["uvicorn", "invoiceops.model_api.app:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow-production:5000
+      INVOICEOPS_MODEL_URI: ${INVOICEOPS_MODEL_URI:-models:/invoice-review@champion}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  model-bootstrap-production:
+    profiles: ["production-bootstrap"]
+    image: ${INVOICEOPS_IMAGE:-invoiceops:unconfigured}
+    command: ["python", "-m", "invoiceops.ml.bootstrap", "--model-only", "--dataset-root", "/app/var/model-bootstrap-data"]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow-production:5000
+    volumes: ["invoice-data:/app/var"]
+    depends_on:
+      mlflow-production:
+        condition: service_healthy
+
+  model-release-production:
+    profiles: ["production-bootstrap"]
+    image: ${INVOICEOPS_IMAGE:-invoiceops:unconfigured}
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow-production:5000
+    depends_on:
+      mlflow-production:
+        condition: service_healthy
+
+  postgres-production:
+    profiles: ["production-bootstrap"]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: mlflow
+      POSTGRES_USER: mlflow
+      POSTGRES_PASSWORD: ${MLFLOW_POSTGRES_PASSWORD:-}
+    volumes: ["mlflow-production-postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlflow -d mlflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio-production:
+    profiles: ["production-bootstrap"]
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${MLFLOW_OBJECT_ACCESS_KEY:-}
+      MINIO_ROOT_PASSWORD: ${MLFLOW_OBJECT_SECRET_KEY:-}
+    volumes: ["mlflow-production-artifacts:/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio-init-production:
+    profiles: ["production-bootstrap"]
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    entrypoint: ["/bin/sh", "-c"]
+    command: >-
+      until mc alias set production http://minio-production:9000 "$${MLFLOW_OBJECT_ACCESS_KEY}" "$${MLFLOW_OBJECT_SECRET_KEY}"; do sleep 1; done;
+      mc mb --ignore-existing production/mlflow-artifacts
+    environment:
+      MLFLOW_OBJECT_ACCESS_KEY: ${MLFLOW_OBJECT_ACCESS_KEY:-}
+      MLFLOW_OBJECT_SECRET_KEY: ${MLFLOW_OBJECT_SECRET_KEY:-}
+    depends_on:
+      minio-production:
+        condition: service_healthy
+
+  mlflow-production:
+    profiles: ["production-bootstrap"]
+    image: ghcr.io/mlflow/mlflow:v2.22.0
+    command: >-
+      mlflow server --host 0.0.0.0 --port 5000 --serve-artifacts
+      --backend-store-uri postgresql://mlflow:$${MLFLOW_POSTGRES_PASSWORD}@postgres-production:5432/mlflow
+      --artifacts-destination s3://mlflow-artifacts
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio-production:9000
+      AWS_ACCESS_KEY_ID: ${MLFLOW_OBJECT_ACCESS_KEY:-}
+      AWS_SECRET_ACCESS_KEY: ${MLFLOW_OBJECT_SECRET_KEY:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      postgres-production:
+        condition: service_healthy
+      minio-production:
+        condition: service_healthy
+      minio-init-production:
+        condition: service_completed_successfully
+
+  proxy-production:
+    profiles: ["production"]
+    image: caddy:2.9-alpine
+    ports: ["80:80", "443:443"]
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-}
+      TLS_EMAIL: ${TLS_EMAIL:-}
+    volumes:
+      - ./Caddyfile.production:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      portal-production:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2019/config/"]
       interval: 10s
       timeout: 5s
       retries: 5
 
 volumes:
   invoice-data:
+  mlflow-postgres:
+  mlflow-artifacts:
+  caddy-data:
+  caddy-config:
+  mlflow-production-postgres:
+  mlflow-production-artifacts:

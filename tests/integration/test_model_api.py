@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+from mlflow.exceptions import MlflowException
 
 from invoiceops.model_api import app as model_api
 
@@ -229,6 +230,59 @@ def test_model_loading_failure_keeps_app_running_and_returns_safe_unavailable_re
     assert predict_response.status_code == 503
     assert health_response.json() == {"detail": "Model service is unavailable."}
     assert predict_response.json() == {"detail": "Model service is unavailable."}
+
+
+def test_missing_champion_alias_keeps_the_503_protection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_champion(*_: object) -> object:
+        raise MlflowException("Registered model alias champion not found.", "RESOURCE_DOES_NOT_EXIST")
+
+    monkeypatch.setattr(model_api.mlflow.models, "get_model_info", missing_champion)
+
+    with TestClient(model_api.create_app()) as test_client:
+        response = test_client.get("/health")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Model service is unavailable."}
+
+
+def test_bootstrap_champion_is_the_precondition_for_a_healthy_model_api(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from invoiceops.ml import bootstrap
+
+    monkeypatch.setattr(bootstrap, "ensure_tracking_available", lambda: object())
+    monkeypatch.setattr(
+        bootstrap, "ensure_canonical_dataset", lambda **_: (tmp_path / "dataset", "created")
+    )
+    monkeypatch.setattr(
+        bootstrap, "find_compatible_random_forest_run", lambda client, dataset: "run-approved"
+    )
+    monkeypatch.setattr(bootstrap, "evaluate_run", lambda run_id: (0.20, 0.50))
+    monkeypatch.setattr(bootstrap, "ensure_registered_version", lambda run_id: ("7", "created"))
+    monkeypatch.setattr(bootstrap, "ensure_champion", lambda version, run_id: "promoted:none->7")
+    monkeypatch.setattr(bootstrap, "verify_champion", lambda client: ("7", "run-approved"))
+
+    result = bootstrap.bootstrap_model(tmp_path / "model-bootstrap-data")
+    monkeypatch.setattr(model_api.mlflow.sklearn, "load_model", lambda _: StubModel())
+    monkeypatch.setattr(
+        model_api.mlflow.models,
+        "get_model_info",
+        lambda _: SimpleNamespace(
+            run_id=result.run_id, registered_model_version=int(result.model_version)
+        ),
+    )
+
+    with TestClient(model_api.create_app()) as test_client:
+        response = test_client.get("/health")
+
+    assert response.json() == {
+        "status": "ok",
+        "model_name": "invoice-review",
+        "model_version": "7",
+        "run_id": "run-approved",
+    }
 
 
 def test_prediction_failure_marks_model_unavailable_and_returns_safe_response(

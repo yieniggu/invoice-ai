@@ -45,6 +45,7 @@ def test_bootstrap_reuses_a_compatible_candidate_and_preserves_or_repairs_its_ch
         "ensure_champion",
         lambda version, run_id: champion_action,
     )
+    monkeypatch.setattr(bootstrap, "verify_champion", lambda client: ("7", "run-approved"))
 
     result = bootstrap.bootstrap_local(tmp_path / "var" / "local-demo" / "invoiceops.db")
 
@@ -103,3 +104,27 @@ def test_bootstrap_reports_dataset_precondition_failure(monkeypatch, tmp_path: P
 
     with pytest.raises(bootstrap.BootstrapError, match="Dataset precondition failed: metadata"):
         bootstrap.bootstrap_local(tmp_path / "var" / "local-demo" / "invoiceops.db")
+
+
+def test_model_only_bootstrap_promotes_and_verifies_the_approved_champion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from invoiceops.ml import bootstrap
+
+    monkeypatch.setattr(bootstrap, "ensure_tracking_available", lambda: object())
+    monkeypatch.setattr(
+        bootstrap, "ensure_canonical_dataset", lambda **_: (tmp_path / "dataset", "created")
+    )
+    monkeypatch.setattr(
+        bootstrap, "find_compatible_random_forest_run", lambda client, dataset: "run-approved"
+    )
+    monkeypatch.setattr(bootstrap, "evaluate_run", lambda run_id: (0.20, 0.50))
+    monkeypatch.setattr(bootstrap, "ensure_registered_version", lambda run_id: ("7", "created"))
+    monkeypatch.setattr(bootstrap, "ensure_champion", lambda version, run_id: "promoted:none->7")
+    monkeypatch.setattr(bootstrap, "verify_champion", lambda client: ("7", "run-approved"))
+
+    result = bootstrap.bootstrap_model(tmp_path / "model-bootstrap-data")
+
+    assert result.model_version == "7"
+    assert result.run_id == "run-approved"
+    assert result.champion == "promoted:none->7"

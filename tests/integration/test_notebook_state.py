@@ -224,6 +224,7 @@ def test_isolated_reset_bootstrap_then_notebook_06_selection_states(tmp_path: Pa
     monkeypatch.setattr(bootstrap, "evaluate_run", lambda run_id: (0.20, 0.50))
     monkeypatch.setattr(bootstrap, "ensure_registered_version", lambda run_id: ("7", "reused"))
     monkeypatch.setattr(bootstrap, "ensure_champion", lambda version, run_id: "unchanged")
+    monkeypatch.setattr(bootstrap, "verify_champion", lambda client: ("7", "run-notebook-state"))
 
     result = bootstrap.bootstrap_local(db_path)
 
