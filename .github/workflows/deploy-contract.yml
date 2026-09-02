@@ -1,0 +1,90 @@
+---
+name: deploy-contract
+
+"on":
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub Environment containing Arbitrum Sepolia secrets
+        required: true
+        type: environment
+      verify_source:
+        description: Verify source when an explorer API key is configured
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    environment: ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Build and test EvidenceRootAnchor
+        run: |
+          docker run --rm -v "$PWD/contracts:/src" -w /src ghcr.io/foundry-rs/foundry:stable forge build
+          docker run --rm -v "$PWD/contracts:/src" -w /src ghcr.io/foundry-rs/foundry:stable forge test
+      - name: Deploy EvidenceRootAnchor
+        env:
+          ARBITRUM_SEPOLIA_RPC_URL: ${{ secrets.ARBITRUM_SEPOLIA_RPC_URL }}
+          PRIVATE_KEY: ${{ secrets.EVIDENCE_ROOT_ANCHOR_DEPLOYER_PRIVATE_KEY }}
+          EVIDENCE_ROOT_ANCHOR_SIGNER: ${{ vars.EVIDENCE_ROOT_ANCHOR_SIGNER }}
+        run: |
+          test -n "$ARBITRUM_SEPOLIA_RPC_URL"
+          test -n "$PRIVATE_KEY"
+          test -n "$EVIDENCE_ROOT_ANCHOR_SIGNER"
+          docker run --rm -v "$PWD/contracts:/src" -w /src \
+            -e ARBITRUM_SEPOLIA_RPC_URL -e PRIVATE_KEY -e EVIDENCE_ROOT_ANCHOR_SIGNER \
+             ghcr.io/foundry-rs/foundry:stable \
+             forge script script/DeployEvidenceRootAnchor.s.sol:DeployEvidenceRootAnchor \
+             --rpc-url "$ARBITRUM_SEPOLIA_RPC_URL" --broadcast
+          broadcast="$(ls -t contracts/broadcast/DeployEvidenceRootAnchor.s.sol/421614/run-latest.json 2>/dev/null | tr '\n' ' ')"
+          test -n "$broadcast"
+          address="$(jq -r '.transactions[] | select(.contractName == "EvidenceRootAnchor") | .contractAddress' $broadcast | tail -n 1)"
+          tx_hash="$(jq -r '.transactions[] | select(.contractName == "EvidenceRootAnchor") | .transactionHash' $broadcast | tail -n 1)"
+          test "$address" != "null"
+          test "$tx_hash" != "null"
+          printf 'CONTRACT_ADDRESS=%s\nDEPLOY_TX_HASH=%s\n' "$address" "$tx_hash" >> "$GITHUB_ENV"
+          printf '{"chain_id":421614,"contract":"EvidenceRootAnchor","address":"%s","transaction_hash":"%s"}\n' "$address" "$tx_hash" > contracts/deployment-result.json
+      - name: Read-only contract smoke check
+        env:
+          ARBITRUM_SEPOLIA_RPC_URL: ${{ secrets.ARBITRUM_SEPOLIA_RPC_URL }}
+        run: |
+          docker run --rm ghcr.io/foundry-rs/foundry:stable cast call "$CONTRACT_ADDRESS" \
+            "isRootRegistered(bytes32)(bool)" \
+            "0x0000000000000000000000000000000000000000000000000000000000000000" \
+            --rpc-url "$ARBITRUM_SEPOLIA_RPC_URL" | grep -Fx false
+      - name: Verify source when explicitly requested
+        if: ${{ inputs.verify_source }}
+        env:
+          ARBISCAN_API_KEY: ${{ secrets.ARBISCAN_API_KEY }}
+          EVIDENCE_ROOT_ANCHOR_SIGNER: ${{ vars.EVIDENCE_ROOT_ANCHOR_SIGNER }}
+        run: |
+          test -n "$ARBISCAN_API_KEY"
+          test -n "$EVIDENCE_ROOT_ANCHOR_SIGNER"
+          constructor_args="$(docker run --rm ghcr.io/foundry-rs/foundry:stable cast abi-encode "constructor(address)" "$EVIDENCE_ROOT_ANCHOR_SIGNER")"
+          docker run --rm -v "$PWD/contracts:/src" -w /src -e ARBISCAN_API_KEY \
+            ghcr.io/foundry-rs/foundry:stable forge verify-contract --watch --chain-id 421614 \
+            --verifier etherscan --verifier-api-key "$ARBISCAN_API_KEY" --constructor-args "$constructor_args" \
+            "$CONTRACT_ADDRESS" src/EvidenceRootAnchor.sol:EvidenceRootAnchor
+      - name: Publish deployment evidence
+        run: |
+          {
+            echo '## Contract deployment'
+            echo
+            echo '- Network: Arbitrum Sepolia (421614)'
+            echo '- Contract: `EvidenceRootAnchor`'
+            echo "- Address: \`$CONTRACT_ADDRESS\`"
+            echo "- Deployment transaction: \`$DEPLOY_TX_HASH\`"
+            echo '- Read-only `isRootRegistered(0x00...)`: `false`'
+            echo "- Source verification: ${{ inputs.verify_source && 'requested' || 'not requested' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: evidence-root-anchor-deployment
+          path: contracts/deployment-result.json
+          if-no-files-found: error

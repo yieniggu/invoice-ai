@@ -1,7 +1,8 @@
-"""Anchor C3-T03 Merkle roots on the local Anvil chain."""
+"""Anchor C3-T03 Merkle roots on Anvil or a configured remote EVM chain."""
 
 import argparse
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -104,6 +105,14 @@ class AnchorDeployment:
     signer: str | None = None
 
 
+@dataclass(frozen=True)
+class RemoteSigner:
+    """An in-memory key supplied by an injected environment variable."""
+
+    address: str
+    private_key: str
+
+
 def root_hash_bytes(root_hash: str) -> bytes:
     """Validate and encode the existing lowercase C3-T03 root without rebuilding it."""
     if not isinstance(root_hash, str) or len(root_hash) != 64:
@@ -147,6 +156,18 @@ def local_signer(web3: Web3) -> str:
     return str(accounts[0])
 
 
+def remote_signer_from_environment(web3: Web3, variable_name: str) -> RemoteSigner:
+    """Load a remote signing key without persisting it to disk or a manifest."""
+    private_key = os.getenv(variable_name)
+    if not private_key:
+        raise AnchorSignerError(f"remote signer variable is not set: {variable_name}")
+    try:
+        account = web3.eth.account.from_key(private_key)
+    except (TypeError, ValueError) as error:
+        raise AnchorSignerError(f"remote signer variable is invalid: {variable_name}") from error
+    return RemoteSigner(address=str(account.address), private_key=private_key)
+
+
 def _read_manifest(path: Path, *, require_address: bool) -> dict[str, object]:
     try:
         payload = json.loads(path.read_text())
@@ -187,6 +208,31 @@ def resolve_deployment(path: str | Path = DEFAULT_MANIFEST_PATH) -> AnchorDeploy
 
 def _contract(web3: Web3, address: str) -> Any:
     return web3.eth.contract(address=Web3.to_checksum_address(address), abi=ANCHOR_ABI)
+
+
+def _submit_root_transaction(
+    web3: Web3, address: str, signer: str | RemoteSigner, root_hash: str
+) -> Any:
+    registration = _contract(web3, address).functions.registerRoot(root_hash_bytes(root_hash))
+    if isinstance(signer, str):
+        return registration.transact({"from": signer})
+    try:
+        transaction = registration.build_transaction(
+            {
+                "from": signer.address,
+                "chainId": chain_id(web3),
+                "nonce": web3.eth.get_transaction_count(signer.address),
+            }
+        )
+        signed = web3.eth.account.sign_transaction(transaction, signer.private_key)
+        raw_transaction = getattr(signed, "raw_transaction", None)
+        if raw_transaction is None:
+            raw_transaction = signed.rawTransaction
+        return web3.eth.send_raw_transaction(raw_transaction)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise AnchorTransactionError(
+            "remote root registration could not be signed or submitted"
+        ) from error
 
 
 def is_root_registered(web3: Web3, address: str, root_hash: str) -> bool:
@@ -243,7 +289,7 @@ def submit_evidence_batch_anchor(
     root_hash: str,
     web3: Web3,
     deployment: AnchorDeployment,
-    signer: str,
+    signer: str | RemoteSigner,
 ) -> EvidenceBatchAnchor:
     """Durably reserve the verified batch before submitting its canonical transaction."""
     root_hash_bytes(root_hash)
@@ -276,11 +322,7 @@ def submit_evidence_batch_anchor(
     except (LookupError, ValueError) as error:
         raise AnchorTransactionError(str(error)) from error
     try:
-        transaction_hash = (
-            _contract(web3, deployment.address)
-            .functions.registerRoot(root_hash_bytes(root_hash))
-            .transact({"from": signer})
-        )
+        transaction_hash = _submit_root_transaction(web3, deployment.address, signer, root_hash)
     except (ContractLogicError, ValueError) as error:
         if is_root_registered(web3, deployment.address, root_hash):
             raise AnchorTransactionError(
@@ -359,7 +401,7 @@ def anchor_evidence_batch(
     root_hash: str,
     web3: Web3,
     deployment: AnchorDeployment,
-    signer: str,
+    signer: str | RemoteSigner,
 ) -> EvidenceBatchAnchor:
     """Submit and reconcile a canonical evidence batch using the persisted transaction identity."""
     submitted = submit_evidence_batch_anchor(
@@ -381,14 +423,10 @@ def anchor_evidence_batch(
     return reconcile_evidence_batch_anchor(db_path, submitted.id, web3)
 
 
-def register_root(web3: Web3, address: str, signer: str, root_hash: str) -> Any:
-    """Register one root using Anvil's unlocked local signer and wait for finality."""
+def register_root(web3: Web3, address: str, signer: str | RemoteSigner, root_hash: str) -> Any:
+    """Register one root with an unlocked local signer or an injected remote signer."""
     try:
-        transaction_hash = (
-            _contract(web3, address)
-            .functions.registerRoot(root_hash_bytes(root_hash))
-            .transact({"from": signer})
-        )
+        transaction_hash = _submit_root_transaction(web3, address, signer, root_hash)
         receipt = web3.eth.wait_for_transaction_receipt(transaction_hash)
     except (ContractLogicError, TimeExhausted, ValueError) as error:
         raise AnchorTransactionError(
@@ -449,13 +487,20 @@ def deploy_anchor(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Anchor C3-T03 Merkle roots on local Anvil.")
+    parser = argparse.ArgumentParser(
+        description="Anchor C3-T03 Merkle roots on a configured EVM chain."
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command in ("register", "query", "status"):
         command_parser = subparsers.add_parser(command)
         command_parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST_PATH)
         command_parser.add_argument("--rpc-url", default=LOCAL_RPC_URL)
         command_parser.add_argument("--root-hash", required=True)
+        if command == "register":
+            command_parser.add_argument(
+                "--signer-env",
+                help="environment variable containing an injected remote private key",
+            )
     deploy_parser = subparsers.add_parser("deploy")
     deploy_parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST_PATH)
     deploy_parser.add_argument("--rpc-url", default=LOCAL_RPC_URL)
@@ -464,6 +509,9 @@ def main() -> None:
     batch_anchor_parser.add_argument("--batch-id", required=True, type=int)
     batch_anchor_parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST_PATH)
     batch_anchor_parser.add_argument("--rpc-url", default=LOCAL_RPC_URL)
+    batch_anchor_parser.add_argument(
+        "--signer-env", help="environment variable containing an injected remote private key"
+    )
     batch_status_parser = subparsers.add_parser("batch-status")
     batch_status_parser.add_argument("--db", required=True, type=Path)
     batch_status_parser.add_argument("--anchor-id", required=True, type=int)
@@ -498,7 +546,11 @@ def main() -> None:
                         root_hash=batch["root_hash"],
                         web3=web3,
                         deployment=deployment,
-                        signer=local_signer(web3),
+                        signer=(
+                            remote_signer_from_environment(web3, args.signer_env)
+                            if args.signer_env
+                            else local_signer(web3)
+                        ),
                     )
                 )
             else:
@@ -506,7 +558,11 @@ def main() -> None:
         else:
             deployment = resolve_deployment(args.manifest)
             web3 = chain(args.rpc_url, expected_chain_id=deployment.chain_id)
-            signer = local_signer(web3)
+            signer = (
+                remote_signer_from_environment(web3, args.signer_env)
+                if args.command == "register" and args.signer_env
+                else local_signer(web3)
+            )
             registered = is_root_registered(web3, deployment.address, args.root_hash)
             if args.command == "register" and not registered:
                 receipt = register_root(web3, deployment.address, signer, args.root_hash)
@@ -515,7 +571,7 @@ def main() -> None:
                     "address": deployment.address,
                     "chain_id": deployment.chain_id,
                     "registered": registered,
-                    "signer": signer,
+                    "signer": signer.address if isinstance(signer, RemoteSigner) else signer,
                     "transaction_hash": Web3.to_hex(receipt["transactionHash"]),
                 }
             else:
@@ -523,7 +579,7 @@ def main() -> None:
                     "address": deployment.address,
                     "chain_id": deployment.chain_id,
                     "registered": registered,
-                    "signer": signer,
+                    "signer": signer.address if isinstance(signer, RemoteSigner) else signer,
                 }
     except AnchorError as error:
         parser.error(str(error))

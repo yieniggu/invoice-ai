@@ -1,0 +1,6 @@
+{
+  "chain_id": 421614,
+  "contract": "EvidenceRootAnchor",
+  "rpc_url": "https://rpc.example.invalid",
+  "signer": "0x0000000000000000000000000000000000000000"
+}

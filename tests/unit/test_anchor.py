@@ -173,6 +173,67 @@ def test_register_and_query_use_the_same_contract_api() -> None:
     ]
 
 
+def test_remote_signer_is_loaded_only_from_the_injected_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from invoiceops.anchor import remote_signer_from_environment
+
+    account = SimpleNamespace(address=SIGNER)
+    web3 = SimpleNamespace(
+        eth=SimpleNamespace(account=SimpleNamespace(from_key=lambda key: account))
+    )
+    monkeypatch.setenv("TEST_ANCHOR_SIGNER", "not-persisted-anywhere")
+
+    signer = remote_signer_from_environment(web3, "TEST_ANCHOR_SIGNER")
+
+    assert signer.address == SIGNER
+    assert signer.private_key == "not-persisted-anywhere"
+
+
+def test_remote_register_signs_and_submits_without_an_unlocked_rpc_account() -> None:
+    from invoiceops.anchor import RemoteSigner, register_root
+
+    calls: list[tuple[str, object]] = []
+
+    class Registration:
+        def build_transaction(self, options: dict[str, object]) -> dict[str, object]:
+            calls.append(("build", options))
+            return {"to": ADDRESS, **options}
+
+    class Functions:
+        def registerRoot(self, root_hash: bytes) -> Registration:
+            calls.append(("register", root_hash))
+            return Registration()
+
+    receipt = {"status": 1, "transactionHash": b"remote-transaction"}
+    web3 = SimpleNamespace(
+        eth=SimpleNamespace(
+            chain_id=421614,
+            contract=lambda address, abi: SimpleNamespace(functions=Functions()),
+            get_transaction_count=lambda address: 9,
+            account=SimpleNamespace(
+                sign_transaction=lambda transaction, private_key: SimpleNamespace(
+                    raw_transaction=b"signed-transaction"
+                )
+            ),
+            send_raw_transaction=lambda raw: calls.append(("send", raw)) or b"remote-transaction",
+            wait_for_transaction_receipt=lambda transaction_hash: receipt,
+        )
+    )
+
+    assert (
+        register_root(
+            web3, ADDRESS, RemoteSigner(address=SIGNER, private_key="in-memory"), ROOT_HASH
+        )
+        == receipt
+    )
+    assert calls == [
+        ("register", bytes.fromhex(ROOT_HASH)),
+        ("build", {"from": SIGNER, "chainId": 421614, "nonce": 9}),
+        ("send", b"signed-transaction"),
+    ]
+
+
 def test_anchor_cli_reuses_the_python_api(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     from invoiceops import anchor
 
