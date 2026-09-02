@@ -125,9 +125,49 @@ Consulte el procedimiento y la clasificación completa de comandos en [Clase 3](
 
 No documente, imprima ni pegue secretos, claves privadas o mnemonic. Anvil usa su cuenta desbloqueada local a través de la API; no se entrega una clave al CLI.
 
-## Compose y manuales
+## Runtime Compose para el aula
 
-`compose.yml` inicia solo el Portal en `:8000`; no levanta MLflow, Model API ni Anvil, por lo que no reemplaza el recorrido integrado anterior. Los manuales de [macOS](docs/manual-ejecucion-macos.md) y [Windows](docs/manual-ejecucion-windows.md) adaptan los comandos de terminal. Los notebooks fuente son la única ruta estudiantil; no hay HTML o PDF renderizado que funcione como fallback.
+Ejecute estos comandos desde la raíz del repositorio. El perfil `classroom` levanta el recorrido integrado con datos persistentes en volúmenes Docker.
+
+### Primer inicio o reinicio limpio
+
+```bash
+docker compose --profile classroom down --volumes --remove-orphans
+docker compose --profile classroom up --build --wait
+```
+
+Este reinicio es destructivo: elimina los volúmenes del aula, incluidos los datos de la aplicación, MLflow y sus artefactos.
+
+### Reinicio normal y detención
+
+```bash
+docker compose --profile classroom down
+docker compose --profile classroom up --wait
+```
+
+El reinicio normal conserva los volúmenes y sus datos. Para detener la pila sin reiniciarla:
+
+```bash
+docker compose --profile classroom down
+```
+
+### Reabrir después de cambiar código o imágenes
+
+```bash
+docker compose --profile classroom up --build --wait
+```
+
+Abra las superficies del aula:
+
+| Servicio | URL |
+|---|---|
+| Portal | `http://127.0.0.1:8080` |
+| MLflow | `http://127.0.0.1:5000` |
+| Model API (health) | `http://127.0.0.1:8001/health` |
+| JupyterLab | `http://127.0.0.1:8889/lab` |
+| Anvil RPC | `http://127.0.0.1:8545` |
+
+Los manuales de [macOS](docs/manual-ejecucion-macos.md) y [Windows](docs/manual-ejecucion-windows.md) adaptan los comandos de terminal. Los notebooks fuente son la única ruta estudiantil; no hay HTML o PDF renderizado que funcione como fallback.
 
 ## Troubleshooting
 
