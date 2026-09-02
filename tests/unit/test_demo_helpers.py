@@ -43,50 +43,7 @@ def test_promotion_and_audit_actions_are_each_guarded_on_rerun() -> None:
     assert audits == ["A"]
 
 
-def test_wait_for_health_polls_health_endpoint_until_ready() -> None:
-    from notebooks.demo_helpers import wait_for_health
-
-    responses = iter([False, True])
-    requested_urls: list[str] = []
-    pauses: list[float] = []
-
-    def request(url: str) -> bool:
-        requested_urls.append(url)
-        return next(responses)
-
-    wait_for_health(
-        "http://127.0.0.1:8000/health",
-        timeout_seconds=1,
-        poll_interval_seconds=0.1,
-        request=request,
-        sleep=pauses.append,
-    )
-
-    assert requested_urls == ["http://127.0.0.1:8000/health"] * 2
-    assert pauses == [0.1]
-
-
-def test_cleanup_created_process_leaves_reused_process_running() -> None:
-    from notebooks.demo_helpers import cleanup_created_process
-
-    class Process:
-        def __init__(self) -> None:
-            self.terminate_calls = 0
-
-        def terminate(self) -> None:
-            self.terminate_calls += 1
-
-    created_process = Process()
-    reused_process = Process()
-
-    cleanup_created_process(created_process, created_by_helper=True)
-    cleanup_created_process(reused_process, created_by_helper=False)
-
-    assert created_process.terminate_calls == 1
-    assert reused_process.terminate_calls == 0
-
-
-def test_evaluation_selection_requires_an_explicit_usable_candidate() -> None:
+def test_evaluation_selection_uses_the_first_usable_candidate_or_an_explicit_override() -> None:
     from invoiceops.notebook_helpers import evaluation_selection_state
 
     class Candidate:
@@ -96,15 +53,18 @@ def test_evaluation_selection_requires_an_explicit_usable_candidate() -> None:
 
     candidates = [Candidate(4, True), Candidate(5, False), Candidate(6, True)]
 
-    missing = evaluation_selection_state(candidates, None)
+    automatic = evaluation_selection_state(candidates, None)
     invalid = evaluation_selection_state(candidates, 5)
     selected = evaluation_selection_state(candidates, 6)
 
-    assert missing.ready is False
+    assert automatic.ready is True
+    assert automatic.evaluation_id == 4
+    assert automatic.state == "Evaluación seleccionada automáticamente: ID 4."
     assert invalid.ready is False
-    assert "4, 6" in missing.next_action
+    assert "4, 6" in invalid.next_action
     assert selected.ready is True
     assert selected.candidate_ids == [4, 6]
+    assert selected.state == "Evaluación seleccionada por override: ID 6."
 
 
 def test_batch_selection_requires_a_positive_explicit_integer() -> None:

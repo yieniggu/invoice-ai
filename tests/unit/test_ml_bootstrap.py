@@ -1,6 +1,96 @@
+import hashlib
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+from invoiceops.ml.data import TARGET
+from invoiceops.ml.features import FEATURE_SCHEMA_VERSION
+
+
+def _matching_dataset(tmp_path: Path) -> Path:
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    (dataset_dir / "metadata.json").write_text('{"dataset_version": "invoice-risk-v1"}\n')
+    return dataset_dir
+
+
+class _MlflowClient:
+    def __init__(self, runs: list[SimpleNamespace]) -> None:
+        self.runs = runs
+
+    def get_experiment_by_name(self, name: str) -> SimpleNamespace:
+        assert name == "invoice-risk"
+        return SimpleNamespace(experiment_id="1")
+
+    def search_runs(self, experiment_ids: list[str], **kwargs: object) -> list[SimpleNamespace]:
+        assert experiment_ids == ["1"]
+        assert kwargs["filter_string"] == "params.model_type = 'random_forest'"
+        return self.runs
+
+    def list_artifacts(self, run_id: str) -> list[SimpleNamespace]:
+        return [SimpleNamespace(path="pipeline", is_dir=True)]
+
+
+def _matching_random_forest_run(
+    dataset_dir: Path, params: dict[str, str]
+) -> SimpleNamespace:
+    dataset_sha256 = hashlib.sha256((dataset_dir / "metadata.json").read_bytes()).hexdigest()
+    return SimpleNamespace(
+        info=SimpleNamespace(run_id="run-compatible", status="FINISHED"),
+        data=SimpleNamespace(
+            params={
+                "model_type": "random_forest",
+                "dataset_version": "invoice-risk-v1",
+                "feature_schema_version": FEATURE_SCHEMA_VERSION,
+                **params,
+            },
+            tags={"dataset_sha256": dataset_sha256, "target": TARGET},
+        ),
+    )
+
+
+def test_compatible_random_forest_run_rejects_matching_dataset_with_stale_model_params(
+    tmp_path: Path,
+) -> None:
+    from invoiceops.ml import bootstrap
+
+    dataset_dir = _matching_dataset(tmp_path)
+    stale_run = _matching_random_forest_run(
+        dataset_dir,
+        {
+            "n_estimators": "100",
+            "max_features": "sqrt",
+            "n_jobs": "-1",
+            "random_state": "20260826",
+        },
+    )
+
+    run_id = bootstrap.find_compatible_random_forest_run(_MlflowClient([stale_run]), dataset_dir)
+
+    assert run_id is None
+
+
+def test_compatible_random_forest_run_reuses_matching_dataset_and_current_model_params(
+    tmp_path: Path,
+) -> None:
+    from invoiceops.ml import bootstrap
+
+    dataset_dir = _matching_dataset(tmp_path)
+    current_run = _matching_random_forest_run(
+        dataset_dir,
+        {
+            "n_estimators": "500",
+            "max_features": "None",
+            "n_jobs": "1",
+            "random_state": "20260826",
+        },
+    )
+
+    run_id = bootstrap.find_compatible_random_forest_run(_MlflowClient([current_run]), dataset_dir)
+
+    assert run_id == "run-compatible"
 
 
 @pytest.mark.parametrize(
@@ -128,3 +218,28 @@ def test_model_only_bootstrap_promotes_and_verifies_the_approved_champion(
     assert result.model_version == "7"
     assert result.run_id == "run-approved"
     assert result.champion == "promoted:none->7"
+
+
+def test_main_model_only_prints_completion_without_accessing_local_restart_state(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    from invoiceops.ml import bootstrap
+
+    dataset_root = tmp_path / "model-bootstrap-data"
+    result = bootstrap.ModelBootstrapResult(
+        dataset="reused",
+        candidate="reused:run-approved",
+        gate="passed:recall=0.200000,precision=0.500000",
+        registry="reused:7",
+        champion="unchanged",
+        model_version="7",
+        run_id="run-approved",
+    )
+    monkeypatch.setattr(bootstrap, "bootstrap_model", lambda root: result)
+    monkeypatch.setattr(sys, "argv", ["bootstrap", "--model-only", "--dataset-root", str(dataset_root)])
+
+    bootstrap.main()
+
+    output = capsys.readouterr().out
+    assert '"model_version": "7"' in output
+    assert output.endswith("Model bootstrap complete; local SQLite state was not modified.\n")

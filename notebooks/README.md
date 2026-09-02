@@ -39,7 +39,7 @@ uv run python scripts/bootstrap_local_demo.py --db-path var/local-demo/invoiceop
 uv run jupyter lab
 ```
 
-Ejecute 03, 04 y 05 con esas variables. En 06, la tabla muestra IDs `USABLE`; copie uno explícitamente en `EVALUATION_ID`. Cree el batch en Portal cuando esa actividad esté autorizada, copie su ID en `BATCH_ID` y continúe. La selección vacía, inválida o incompleta muestra una omisión sin traceback. El resultado esperado antes de Anvil es una evaluación visible, un Evidence Record y un batch explícito; los checks E2E quedan `PENDING` hasta anclar el root.
+Ejecute 03, 04 y 05 con esas variables. En 06, ejecute todas las celdas: selecciona la primera evaluación `USABLE`, crea o reutiliza su Evidence Record y batch, despliega el contrato local si Anvil está limpio y ancla el root. Una repetición reutiliza los artefactos persistidos y entrega el resultado E2E sin IDs ni flags manuales.
 
 ## Orden y propósito
 

@@ -8,6 +8,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from invoiceops.ml.features import BOOLEAN_FEATURES, CATEGORICAL_FEATURES, NUMERIC_FEATURES
 
 RANDOM_FOREST_SEED = 20260826
+RANDOM_FOREST_ESTIMATORS = 500
 
 
 def _categorical_encoder() -> OneHotEncoder:
@@ -50,7 +51,15 @@ def build_random_forest_pipeline() -> Pipeline:
     return Pipeline(
         [
             ("preprocessor", preprocessor),
-            # Keep notebook demonstrations and model behavior reproducible.
-            ("classifier", RandomForestClassifier(random_state=RANDOM_FOREST_SEED)),
+            # Stabilize the canonical candidate while retaining deterministic teaching runs.
+            (
+                "classifier",
+                RandomForestClassifier(
+                    max_features=None,
+                    n_estimators=RANDOM_FOREST_ESTIMATORS,
+                    n_jobs=1,
+                    random_state=RANDOM_FOREST_SEED,
+                ),
+            ),
         ]
     )

@@ -9,8 +9,6 @@ __pycache__
 .env.*
 var
 artifacts
-notebooks
-contracts
 docs
 scripts
 tests

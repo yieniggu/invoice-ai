@@ -1,9 +1,8 @@
 ---
 services:
   portal-lab:
-    profiles: ["manual", "local", "full-lab"]
+    profiles: ["manual", "local", "full-lab", "classroom"]
     build: .
-    ports: ["8000:8000"]
     environment:
       INVOICEOPS_MODE: demo
       INVOICEOPS_DB_PATH: /app/var/invoiceops.db
@@ -12,22 +11,35 @@ services:
       INVOICEOPS_SESSION_SECRET: dev-only-change-me
       INVOICEOPS_MODEL_API_URL: http://model-api:8001
     volumes: ["invoice-data:/app/var"]
+    depends_on:
+      classroom-db-bootstrap:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 90s
+
+  classroom-db-bootstrap:
+    profiles: ["manual", "local", "full-lab", "classroom"]
+    build: .
+    command: ["python", "-m", "invoiceops.legacy.classroom_bootstrap"]
+    environment:
+      INVOICEOPS_DB_PATH: /app/var/invoiceops.db
+    volumes: ["invoice-data:/app/var"]
 
   model-api:
-    profiles: ["full-lab"]
+    profiles: ["full-lab", "classroom"]
     build: .
     command: ["uvicorn", "invoiceops.model_api.app:app", "--host", "0.0.0.0", "--port", "8001"]
+    ports: ["127.0.0.1:8001:8001"]
     environment:
       MLFLOW_TRACKING_URI: http://mlflow-lab:5000
       INVOICEOPS_MODEL_URI: models:/invoice-review@champion
     depends_on:
-      mlflow-lab:
-        condition: service_started
+      model-bootstrap:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')"]
       interval: 10s
@@ -35,7 +47,7 @@ services:
       retries: 5
 
   model-bootstrap:
-    profiles: ["full-lab-bootstrap"]
+    profiles: ["full-lab", "full-lab-bootstrap", "classroom"]
     build: .
     command: ["python", "-m", "invoiceops.ml.bootstrap", "--model-only", "--dataset-root", "/app/var/model-bootstrap-data"]
     environment:
@@ -46,7 +58,7 @@ services:
         condition: service_healthy
 
   postgres:
-    profiles: ["full-lab", "full-lab-bootstrap"]
+    profiles: ["full-lab", "full-lab-bootstrap", "classroom"]
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: mlflow
@@ -60,7 +72,7 @@ services:
       retries: 10
 
   minio:
-    profiles: ["full-lab", "full-lab-bootstrap"]
+    profiles: ["full-lab", "full-lab-bootstrap", "classroom"]
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data --console-address :9001
     environment:
@@ -68,25 +80,30 @@ services:
       MINIO_ROOT_PASSWORD: minio-lab-password
     volumes: ["mlflow-artifacts:/data"]
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9000/minio/health/live"]
+      test: ["CMD-SHELL", "curl --fail --silent --show-error --output /dev/null http://127.0.0.1:9000/minio/health/live"]
       interval: 10s
       timeout: 5s
       retries: 10
 
   minio-init:
-    profiles: ["full-lab", "full-lab-bootstrap"]
+    profiles: ["full-lab", "full-lab-bootstrap", "classroom"]
     image: minio/mc:RELEASE.2025-04-16T18-13-26Z
     entrypoint: ["/bin/sh", "-c"]
-    command: >-
-      until mc alias set lab http://minio:9000 minio-lab minio-lab-password; do sleep 1; done;
-      mc mb --ignore-existing lab/mlflow-artifacts
+    command:
+      - >-
+        until mc alias set lab http://minio:9000 minio-lab minio-lab-password; do sleep 1; done;
+        mc mb --ignore-existing lab/mlflow-artifacts
     depends_on:
       minio:
         condition: service_healthy
 
   mlflow-lab:
-    profiles: ["full-lab", "full-lab-bootstrap"]
-    image: ghcr.io/mlflow/mlflow:v2.22.0
+    profiles: ["full-lab", "full-lab-bootstrap", "classroom"]
+    image: invoiceops-mlflow:v2.22.0
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
+    ports: ["127.0.0.1:5000:5000"]
     command: >-
       mlflow server --host 0.0.0.0 --port 5000 --serve-artifacts
       --backend-store-uri postgresql://mlflow:mlflow-lab-only@postgres:5432/mlflow
@@ -109,9 +126,9 @@ services:
       retries: 10
 
   proxy-lab:
-    profiles: ["full-lab"]
+    profiles: ["full-lab", "classroom"]
     image: caddy:2.9-alpine
-    ports: ["8080:8080"]
+    ports: ["127.0.0.1:8080:8080"]
     volumes:
       - ./Caddyfile.lab:/etc/caddy/Caddyfile:ro
     depends_on:
@@ -119,6 +136,48 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2019/config/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  jupyter-classroom:
+    profiles: ["classroom"]
+    build:
+      context: .
+      target: classroom
+    command:
+      ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--ServerApp.token=", "--ServerApp.password="]
+    ports: ["127.0.0.1:8889:8888"]
+    environment:
+      HOME: /tmp/invoiceops
+      PATH: /app/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+      JUPYTER_RUNTIME_DIR: /tmp/jupyter-runtime
+      MLFLOW_TRACKING_URI: http://mlflow-lab:5000
+      INVOICEOPS_MLFLOW_UI_URL: http://127.0.0.1:5000
+      INVOICEOPS_MODEL_API_URL: http://model-api:8001
+      INVOICEOPS_DB_PATH: /app/var/invoiceops.db
+      INVOICEOPS_NOTEBOOK_DEMO_ROOT: /app/var/notebook-state
+      INVOICEOPS_EVM_RPC_URL: http://anvil-classroom:8545
+    volumes:
+      - ./notebooks:/app/notebooks
+      - invoice-data:/app/var
+    depends_on:
+      mlflow-lab:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/lab')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  anvil-classroom:
+    profiles: ["classroom"]
+    image: ghcr.io/foundry-rs/foundry:v1.0.0
+    entrypoint: ["anvil"]
+    command: ["--host", "0.0.0.0", "--port", "8545", "--chain-id", "31337"]
+    ports: ["127.0.0.1:8545:8545"]
+    healthcheck:
+      test: ["CMD", "cast", "block-number", "--rpc-url", "http://127.0.0.1:8545"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -195,7 +254,7 @@ services:
       MINIO_ROOT_PASSWORD: ${MLFLOW_OBJECT_SECRET_KEY:-}
     volumes: ["mlflow-production-artifacts:/data"]
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9000/minio/health/live"]
+      test: ["CMD-SHELL", "curl --fail --silent --show-error --output /dev/null http://127.0.0.1:9000/minio/health/live"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -216,7 +275,10 @@ services:
 
   mlflow-production:
     profiles: ["production-bootstrap"]
-    image: ghcr.io/mlflow/mlflow:v2.22.0
+    image: invoiceops-mlflow:v2.22.0
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
     command: >-
       mlflow server --host 0.0.0.0 --port 5000 --serve-artifacts
       --backend-store-uri postgresql://mlflow:$${MLFLOW_POSTGRES_PASSWORD}@postgres-production:5432/mlflow

@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from code import InteractiveInterpreter
 from html import escape
 from pathlib import Path
@@ -9,12 +10,6 @@ import pytest
 from invoiceops import demo_paths
 from invoiceops.demo_reset import reset_local_demo
 from invoiceops.domain.policy import recommend_from_probability
-from invoiceops.evidence import (
-    EvidenceProvenance,
-    EvidenceRecord,
-    create_evidence_batch,
-    persist_evidence_records,
-)
 from invoiceops.legacy.db import insert_model_evaluation
 from invoiceops.ml import bootstrap
 from invoiceops.ml.train import ensure_canonical_dataset
@@ -33,58 +28,22 @@ def _notebook_cell(cell_id: str) -> str:
     raise AssertionError(f"Notebook cell not found: {cell_id}")
 
 
-def _record(evaluation_id: int) -> EvidenceRecord:
-    return EvidenceRecord(
-        evaluation_id=evaluation_id,
-        invoice_id="INV-10023",
-        correlation_id="corr-notebook-state",
-        model_name="invoice-review",
-        model_version="7",
-        run_id="run-notebook-state",
-        manual_review_probability="0.8",
-        policy_version="ml-policy-v1",
-        policy_threshold="0.8",
-        recommendation="MANUAL_REVIEW",
-        source="model",
-        reason="probability_at_or_above_threshold",
-        evaluation_created_at="2026-01-01T00:00:00Z",
-        provenance=EvidenceProvenance(
-            dataset_version="invoice-risk-v1",
-            feature_schema_version="invoice-features-v1",
-            git_commit="a" * 40,
-        ),
-    )
-
-
 def _run_evaluation_selection(db_path: Path, evaluation_id: int | None) -> dict[str, object]:
     states: list[tuple[object, ...]] = []
     namespace = {
-            "db_path": db_path,
-            "escape": escape,
-            "show_table": lambda *args: None,
-            "precondition": lambda *args: states.append(args),
+        "db_path": db_path,
+        "EVALUATION_ID": evaluation_id,
+        "escape": escape,
+        "show_table": lambda *args: None,
+        "precondition": lambda *args: states.append(args),
     }
-    source = _notebook_cell("select-evaluation").replace(
-        "EVALUATION_ID = None", f"EVALUATION_ID = {evaluation_id!r}"
-    )
+    source = _notebook_cell("select-evaluation")
     InteractiveInterpreter(namespace).runcode(compile(source, str(NOTEBOOK_PATH), "exec"))
-    return {"selection": namespace["selection"], "states": states}
-
-
-def _run_batch_selection(db_path: Path, evaluation_id: int, batch_id: int | None) -> dict[str, object]:
-    states: list[tuple[object, ...]] = []
-    namespace = {
-            "db_path": db_path,
-            "EVALUATION_ID": evaluation_id,
-            "selection": SimpleNamespace(ready=True, next_action="Continúa."),
-            "escape": escape,
-            "full_value": str,
-            "show_table": lambda *args: None,
-            "precondition": lambda *args: states.append(args),
+    return {
+        "evaluation_id": namespace["EVALUATION_ID"],
+        "selection": namespace["selection"],
+        "states": states,
     }
-    source = _notebook_cell("select-batch").replace("BATCH_ID = None", f"BATCH_ID = {batch_id!r}")
-    InteractiveInterpreter(namespace).runcode(compile(source, str(NOTEBOOK_PATH), "exec"))
-    return {"batch": namespace["persisted_batch"], "states": states}
 
 
 def test_browser_smoke_uses_one_confirmed_isolated_database() -> None:
@@ -117,8 +76,12 @@ def test_student_materials_describe_one_canonical_reset_and_no_rendered_fallback
 
 def test_notebook_01_uses_the_isolated_dataset_and_handles_uninitialized_reset() -> None:
     notebook = json.loads(NOTEBOOK_01_PATH.read_text(encoding="utf-8"))
-    clean_start = "".join(next(cell["source"] for cell in notebook["cells"] if cell["id"] == "clean-start"))
-    load_data = "".join(next(cell["source"] for cell in notebook["cells"] if cell["id"] == "load-data"))
+    clean_start = "".join(
+        next(cell["source"] for cell in notebook["cells"] if cell["id"] == "clean-start")
+    )
+    load_data = "".join(
+        next(cell["source"] for cell in notebook["cells"] if cell["id"] == "load-data")
+    )
 
     assert "canonical_demo_root" in clean_start
     assert "INITIALIZE_DEMO_ROOT" in clean_start
@@ -201,14 +164,41 @@ def test_uipath_ownership_keeps_source_and_package_but_ignores_studio_state() ->
     assert "paquete distribuible" in ownership
 
 
-def test_isolated_reset_bootstrap_then_notebook_06_selection_states(tmp_path: Path, monkeypatch) -> None:
+def test_notebook_06_is_fully_automatic_and_registers_the_classroom_kernel() -> None:
+    notebook = json.loads(NOTEBOOK_PATH.read_text(encoding="utf-8"))
+    cells = {cell["id"]: "".join(cell["source"]) for cell in notebook["cells"]}
+    assert "next((item.evaluation_id for item in candidates if item.usable), None)" in cells[
+        "select-evaluation"
+    ]
+    assert "get_latest_evidence_batch_for_evaluation" in cells["select-batch"]
+    assert "create_evidence_batch(db_path, [EVALUATION_ID])" in cells["select-batch"]
+    assert "evm.eth.get_code(deployment.address)" in cells["anchor-read-only-preflight"]
+    assert "anchor_evidence_batch(" in cells["optional-anchor-and-reconcile"]
+    assert "rpc_url=os.getenv('INVOICEOPS_EVM_RPC_URL'" in cells["verify-end-to-end"]
+    assert not any("ALLOW_" in source or "BATCH_ID" in source for source in cells.values())
+
+    dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    compose = (PROJECT_ROOT / "compose.yml").read_text(encoding="utf-8")
+    assert 'ipykernel install --prefix /usr/local --name invoiceops-py312' in dockerfile
+    assert "COPY --chown=invoiceops:invoiceops contracts ./contracts" in dockerfile
+    assert "target: classroom" in compose
+    assert "PATH: /app/.venv/bin:" in compose
+
+
+def test_isolated_reset_bootstrap_then_notebook_06_selection_states(
+    tmp_path: Path, monkeypatch
+) -> None:
     """Exercise the guarded clean start and actual Notebook 06 selection cells."""
     monkeypatch.setattr(demo_paths, "PROJECT_ROOT", tmp_path)
     db_path = tmp_path / "var" / "local-demo" / "invoiceops.db"
     repository_dataset_root = NOTEBOOK_PATH.parents[1] / "data" / "invoice-risk-v1"
     repository_dataset_snapshot = (
         tuple(
-            (path.relative_to(repository_dataset_root), path.stat().st_size, path.stat().st_mtime_ns)
+            (
+                path.relative_to(repository_dataset_root),
+                path.stat().st_size,
+                path.stat().st_mtime_ns,
+            )
             for path in sorted(repository_dataset_root.rglob("*"))
         )
         if repository_dataset_root.exists()
@@ -219,7 +209,9 @@ def test_isolated_reset_bootstrap_then_notebook_06_selection_states(tmp_path: Pa
 
     monkeypatch.setattr(bootstrap, "ensure_tracking_available", lambda: object())
     monkeypatch.setattr(
-        bootstrap, "find_compatible_random_forest_run", lambda client, dataset_dir: "run-notebook-state"
+        bootstrap,
+        "find_compatible_random_forest_run",
+        lambda client, dataset_dir: "run-notebook-state",
     )
     monkeypatch.setattr(bootstrap, "evaluate_run", lambda run_id: (0.20, 0.50))
     monkeypatch.setattr(bootstrap, "ensure_registered_version", lambda run_id: ("7", "reused"))
@@ -233,7 +225,11 @@ def test_isolated_reset_bootstrap_then_notebook_06_selection_states(tmp_path: Pa
     assert (db_path.parent / "data" / "invoice-risk-v1" / "metadata.json").is_file()
     current_repository_dataset_snapshot = (
         tuple(
-            (path.relative_to(repository_dataset_root), path.stat().st_size, path.stat().st_mtime_ns)
+            (
+                path.relative_to(repository_dataset_root),
+                path.stat().st_size,
+                path.stat().st_mtime_ns,
+            )
             for path in sorted(repository_dataset_root.rglob("*"))
         )
         if repository_dataset_root.exists()
@@ -243,11 +239,27 @@ def test_isolated_reset_bootstrap_then_notebook_06_selection_states(tmp_path: Pa
 
     empty = _run_evaluation_selection(db_path, None)
     assert empty["selection"].ready is False
+    assert empty["states"] == [
+        (
+            "No hay evaluaciones USABLE.",
+            "Ejecuta N03--N05 para registrar una evaluación con lineage completo y vuelve a ejecutar esta celda.",
+        )
+    ]
 
     insert_model_evaluation(
         db_path,
         "INV-10023",
         correlation_id="corr-notebook-state",
+        model_name="invoice-review",
+        model_version="7",
+        run_id="run-notebook-state",
+        manual_review_probability=0.8,
+        recommendation=recommend_from_probability(0.8),
+    )
+    insert_model_evaluation(
+        db_path,
+        "INV-10024",
+        correlation_id="corr-notebook-state-override",
         model_name="invoice-review",
         model_version="7",
         run_id="run-notebook-state",
@@ -271,16 +283,36 @@ def test_isolated_reset_bootstrap_then_notebook_06_selection_states(tmp_path: Pa
             return MlflowRun()
 
     monkeypatch.setattr("invoiceops.evidence.MlflowClient", MlflowClient)
-    invalid_evaluation = _run_evaluation_selection(db_path, 999)
-    valid_evaluation = _run_evaluation_selection(db_path, 1)
-    assert invalid_evaluation["selection"].ready is False
-    assert valid_evaluation["selection"].ready is True
+    automatic_evaluation = _run_evaluation_selection(db_path, None)
+    assert automatic_evaluation["selection"].ready is True
+    assert automatic_evaluation["evaluation_id"] == 1
+    assert automatic_evaluation["states"] == [
+        ("Evaluación seleccionada automáticamente: ID 1.", "Continúa.")
+    ]
 
-    persist_evidence_records(db_path, [_record(1)])
-    batch = create_evidence_batch(db_path, [1])
-    empty_batch = _run_batch_selection(db_path, 1, None)
-    invalid_batch = _run_batch_selection(db_path, 1, 999)
-    valid_batch = _run_batch_selection(db_path, 1, batch.id)
-    assert empty_batch["batch"] is None
-    assert invalid_batch["batch"] is None
-    assert valid_batch["batch"].id == batch.id
+    states: list[tuple[object, ...]] = []
+    namespace = {
+        "db_path": db_path,
+        "EVALUATION_ID": automatic_evaluation["evaluation_id"],
+        "selection": automatic_evaluation["selection"],
+        "escape": escape,
+        "full_value": str,
+        "show_table": lambda *args: None,
+        "precondition": lambda *args: states.append(args),
+    }
+    interpreter = InteractiveInterpreter(namespace)
+    for cell_id in ("resolve-evidence-record", "select-batch"):
+        interpreter.runcode(compile(_notebook_cell(cell_id), str(NOTEBOOK_PATH), "exec"))
+
+    assert namespace["record"].evaluation_id == 1
+    assert namespace["persisted_batch"].id == 1
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM evidence_records").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM evidence_batches").fetchone()[0] == 1
+
+    for cell_id in ("resolve-evidence-record", "select-batch"):
+        interpreter.runcode(compile(_notebook_cell(cell_id), str(NOTEBOOK_PATH), "exec"))
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM evidence_records").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM evidence_batches").fetchone()[0] == 1

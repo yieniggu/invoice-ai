@@ -13,6 +13,7 @@ from invoiceops.demo_paths import ensure_demo_root, initialize_demo_root
 from invoiceops.legacy.db import run_migrations
 from invoiceops.legacy.seed import seed_invoices
 from invoiceops.ml.gate import evaluate_run, passes_gate
+from invoiceops.ml.pipelines import build_random_forest_pipeline
 from invoiceops.ml.registry import ensure_champion, ensure_registered_version
 from invoiceops.ml.train import (
     CANONICAL_DATASET_VERSION,
@@ -74,6 +75,11 @@ def find_compatible_random_forest_run(client: MlflowClient, dataset_dir: Path) -
         filter_string="params.model_type = 'random_forest'",
         order_by=["attributes.start_time DESC"],
     )
+    classifier_params = build_random_forest_pipeline().named_steps["classifier"].get_params()
+    expected_model_params = {
+        name: str(classifier_params[name])
+        for name in ("n_estimators", "max_features", "n_jobs", "random_state")
+    }
     for run in runs:
         if run.info.status != "FINISHED":
             continue
@@ -83,6 +89,9 @@ def find_compatible_random_forest_run(client: MlflowClient, dataset_dir: Path) -
             and run.data.tags.get("dataset_sha256") == dataset_sha256
             and run.data.tags.get("target") == TARGET
             and metadata["dataset_version"] == CANONICAL_DATASET_VERSION
+            and all(
+                run.data.params.get(name) == value for name, value in expected_model_params.items()
+            )
         ):
             artifacts = client.list_artifacts(run.info.run_id)
             if any(artifact.path == "pipeline" and artifact.is_dir for artifact in artifacts):
@@ -200,6 +209,9 @@ def main() -> None:
     except BootstrapError as error:
         raise SystemExit(f"BOOTSTRAP FAILED: {error}") from error
     print(json.dumps(asdict(result), indent=2, sort_keys=True))
+    if isinstance(result, ModelBootstrapResult):
+        print("Model bootstrap complete; local SQLite state was not modified.")
+        return
     print(
         "Model API restart: required before serving the promoted champion."
         if result.model_api_restart_required

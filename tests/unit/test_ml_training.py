@@ -9,12 +9,15 @@ import pytest
 
 from invoiceops.ml.data import TARGET, generate_synthetic_dataset
 from invoiceops.ml.features import MODEL_FEATURES
+from invoiceops.ml.gate import PRECISION_THRESHOLD, RECALL_THRESHOLD, passes_gate
 from invoiceops.ml.metrics import evaluate_binary_classifier
 from invoiceops.ml.pipelines import (
+    RANDOM_FOREST_ESTIMATORS,
     build_dummy_pipeline,
     build_logistic_pipeline,
     build_random_forest_pipeline,
 )
+from invoiceops.ml.train import ensure_canonical_dataset
 
 
 @pytest.fixture
@@ -79,6 +82,9 @@ def test_random_forest_pipeline_exposes_estimators_and_feature_importances(
     validation.loc[validation.index[0], "country_risk"] = "unknown"
 
     assert classifier.random_state == 20260826
+    assert classifier.n_estimators == RANDOM_FOREST_ESTIMATORS
+    assert classifier.max_features is None
+    assert classifier.n_jobs == 1
     assert classifier.estimators_
     assert (
         classifier.feature_importances_.size
@@ -97,6 +103,21 @@ def test_metrics_handle_zero_division() -> None:
         "f1": 0.0,
         "roc_auc": 0.0,
     }
+
+
+def test_canonical_random_forest_candidate_meets_the_unchanged_quality_gate(tmp_path: Path) -> None:
+    dataset_dir, _ = ensure_canonical_dataset(output_root=tmp_path / "data")
+    train = pd.read_csv(dataset_dir / "train.csv")
+    validation = pd.read_csv(dataset_dir / "validation.csv")
+    pipeline = build_random_forest_pipeline().fit(train[MODEL_FEATURES], train[TARGET])
+    probabilities = pipeline.predict_proba(validation[MODEL_FEATURES])[:, 1]
+    metrics = evaluate_binary_classifier(
+        validation[TARGET], pipeline.predict(validation[MODEL_FEATURES]), probabilities
+    )
+
+    assert metrics["recall"] >= RECALL_THRESHOLD
+    assert metrics["precision"] >= PRECISION_THRESHOLD
+    assert passes_gate(metrics["recall"], metrics["precision"])
 
 
 @pytest.mark.parametrize("model", ["dummy", "logistic", "random_forest"])
@@ -198,7 +219,9 @@ def test_train_cli_logs_tracking_metadata_metrics_and_artifacts(
     assert run.data.params["dataset_version"] == "invoice-risk-v1"
     assert run.data.params["feature_schema_version"] == "invoice-features-v1"
     assert run.data.params["random_state"] == "20260826"
-    assert run.data.params["n_estimators"] == "100"
+    assert run.data.params["n_estimators"] == "500"
+    assert run.data.params["max_features"] == "None"
+    assert run.data.params["n_jobs"] == "1"
     assert set(run.data.metrics) == {"accuracy", "precision", "recall", "f1", "roc_auc"}
     assert run.data.tags["dataset_sha256"]
     assert run.data.tags["git_commit"] == "unknown"
