@@ -1,0 +1,67 @@
+---
+name: deploy-services
+
+"on":
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub Environment containing deployment secrets
+        required: true
+        type: environment
+      image:
+        description: Immutable InvoiceOps image reference
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    environment: ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Validate production configuration without starting services
+        env:
+          INVOICEOPS_IMAGE: ${{ inputs.image }}
+          INVOICEOPS_DB_PATH: /app/var/invoiceops.db
+          INVOICEOPS_DATA_VOLUME: /srv/invoiceops/var
+          INVOICEOPS_SESSION_SECRET: placeholder-for-validation-only
+          PUBLIC_HOST: portal.example.invalid
+          TLS_EMAIL: operations@example.invalid
+        run: ./scripts/lab-preflight.sh production
+      - name: Validate immutable image reference
+        id: image
+        env:
+          IMAGE_INPUT: ${{ inputs.image }}
+        run: |
+          image="$(./scripts/validate-image-reference.sh "$IMAGE_INPUT")"
+          printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
+      - name: Deploy on the approved single VM
+        env:
+          GCP_VM_HOST: ${{ secrets.GCP_VM_HOST }}
+          GCP_VM_USER: ${{ vars.GCP_VM_USER }}
+          GCP_SSH_PRIVATE_KEY: ${{ secrets.GCP_SSH_PRIVATE_KEY }}
+          GCP_SSH_KNOWN_HOSTS: ${{ secrets.GCP_SSH_KNOWN_HOSTS }}
+          VALIDATED_IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          test -n "$GCP_VM_HOST"
+          test -n "$GCP_VM_USER"
+          test -n "$GCP_SSH_PRIVATE_KEY"
+          test -n "$GCP_SSH_KNOWN_HOSTS"
+          install -m 700 -d ~/.ssh
+          printf '%s' "$GCP_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$GCP_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          printf '%s\n' "$VALIDATED_IMAGE" | ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts "$GCP_VM_USER@$GCP_VM_HOST" '
+            set -euo pipefail
+            IFS= read -r image
+            set -a
+            . /etc/invoiceops/production.env
+            set +a
+            cd /srv/invoice-ai
+            INVOICEOPS_IMAGE="$image" APPLY=1 ./scripts/deploy-lab.sh production
+          '
