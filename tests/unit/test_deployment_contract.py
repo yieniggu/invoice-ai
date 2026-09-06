@@ -5,6 +5,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parents[2]
 
 
@@ -115,6 +117,19 @@ def test_minio_healthchecks_use_curl_available_in_the_pinned_image() -> None:
         definition = compose_service(compose, service)
         assert expected_healthcheck in definition
         assert "wget" not in definition
+
+
+def test_production_portal_forwards_the_complete_secure_auth_contract() -> None:
+    compose = (ROOT / "compose.yml").read_text()
+    portal_production = compose_service(compose, "portal-production")
+
+    for name in (
+        "INVOICEOPS_DEMO_USERNAME",
+        "INVOICEOPS_DEMO_PASSWORD",
+        "INVOICEOPS_SESSION_SECRET",
+        "INVOICEOPS_ALLOWED_DECISION_PRINCIPALS",
+    ):
+        assert f"{name}: ${{{name}:-}}" in portal_production
 
 
 def test_production_minio_initializer_passes_one_posix_script_to_sh() -> None:
@@ -386,7 +401,10 @@ def test_production_preflight_remains_digest_only(tmp_path: Path) -> None:
             "INVOICEOPS_IMAGE": "us-central1-docker.pkg.dev/acme-project/invoiceops/invoiceops:latest",
             "INVOICEOPS_DB_PATH": "/app/var/invoiceops.db",
             "INVOICEOPS_DATA_VOLUME": "/srv/invoiceops/var",
+            "INVOICEOPS_DEMO_USERNAME": "secure-analyst",
+            "INVOICEOPS_DEMO_PASSWORD": "secure-password",
             "INVOICEOPS_SESSION_SECRET": "test-session-secret",
+            "INVOICEOPS_ALLOWED_DECISION_PRINCIPALS": "secure-analyst",
             "DOCKER_LOG": str(log),
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
         },
@@ -394,6 +412,53 @@ def test_production_preflight_remains_digest_only(tmp_path: Path) -> None:
 
     assert completed.returncode == 2
     assert "pinned by sha256 digest" in completed.stderr
+    assert "config -q" not in log.read_text()
+
+
+@pytest.mark.parametrize(
+    "missing_name",
+    (
+        "INVOICEOPS_DEMO_USERNAME",
+        "INVOICEOPS_DEMO_PASSWORD",
+        "INVOICEOPS_SESSION_SECRET",
+        "INVOICEOPS_ALLOWED_DECISION_PRINCIPALS",
+    ),
+)
+def test_production_preflight_rejects_each_missing_secure_auth_variable_before_compose_config(
+    tmp_path: Path, missing_name: str
+) -> None:
+    docker = tmp_path / "docker"
+    log = tmp_path / "docker.log"
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\n"
+        "exit 0\n"
+    )
+    docker.chmod(0o755)
+    environment = {
+        **os.environ,
+        "INVOICEOPS_IMAGE": "ghcr.io/acme/invoiceops@sha256:" + "a" * 64,
+        "INVOICEOPS_DB_PATH": "/app/var/invoiceops.db",
+        "INVOICEOPS_DATA_VOLUME": "/srv/invoiceops/var",
+        "INVOICEOPS_DEMO_USERNAME": "secure-analyst",
+        "INVOICEOPS_DEMO_PASSWORD": "secure-password",
+        "INVOICEOPS_SESSION_SECRET": "test-session-secret",
+        "INVOICEOPS_ALLOWED_DECISION_PRINCIPALS": "secure-analyst",
+        "DOCKER_LOG": str(log),
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+    }
+    environment.pop(missing_name)
+
+    completed = subprocess.run(
+        [str(ROOT / "scripts" / "lab-preflight.sh"), "production"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert completed.returncode == 1
+    assert f"Missing required production variable: {missing_name}" in completed.stderr
     assert "config -q" not in log.read_text()
 
 
@@ -629,7 +694,10 @@ def test_production_deploy_rejects_a_missing_champion_before_every_compose_up(
             "INVOICEOPS_IMAGE": "ghcr.io/acme/invoiceops@sha256:" + "a" * 64,
             "INVOICEOPS_DB_PATH": "/srv/invoiceops/invoiceops.db",
             "INVOICEOPS_DATA_VOLUME": "/srv/invoiceops",
+            "INVOICEOPS_DEMO_USERNAME": "secure-analyst",
+            "INVOICEOPS_DEMO_PASSWORD": "secure-password",
             "INVOICEOPS_SESSION_SECRET": "test-session-secret",
+            "INVOICEOPS_ALLOWED_DECISION_PRINCIPALS": "secure-analyst",
             "DOCKER_LOG": str(log),
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
         },
@@ -688,7 +756,10 @@ def test_production_deploy_starts_only_serving_services_after_a_valid_champion(
             "INVOICEOPS_IMAGE": "ghcr.io/acme/invoiceops@sha256:" + "a" * 64,
             "INVOICEOPS_DB_PATH": "/srv/invoiceops/invoiceops.db",
             "INVOICEOPS_DATA_VOLUME": "/srv/invoiceops",
+            "INVOICEOPS_DEMO_USERNAME": "secure-analyst",
+            "INVOICEOPS_DEMO_PASSWORD": "secure-password",
             "INVOICEOPS_SESSION_SECRET": "test-session-secret",
+            "INVOICEOPS_ALLOWED_DECISION_PRINCIPALS": "secure-analyst",
             "DOCKER_LOG": str(log),
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
         },
