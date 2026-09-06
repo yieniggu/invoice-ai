@@ -144,6 +144,33 @@ def test_mlflow_services_share_a_reproducible_postgres_and_s3_image() -> None:
     assert "psycopg2-binary==2.9.10" in dockerfile
 
 
+def test_production_mlflow_percent_encodes_its_postgres_password_at_runtime() -> None:
+    compose = (ROOT / "compose.yml").read_text()
+    mlflow_production = compose_service(compose, "mlflow-production")
+    password = "pa:ss@word/with?reserved#chars%&+="
+    encoder = (
+        'import os; from urllib.parse import quote; '
+        'print(quote(os.environ["MLFLOW_POSTGRES_PASSWORD"], safe=""))'
+    )
+
+    assert 'entrypoint: ["/bin/sh", "-c"]' in mlflow_production
+    assert f"python -c '{encoder}'" in mlflow_production
+    assert "MLFLOW_POSTGRES_PASSWORD: ${MLFLOW_POSTGRES_PASSWORD:-}" in mlflow_production
+    assert 'postgresql://mlflow:$${password}@postgres-production:5432/mlflow' in mlflow_production
+    assert "postgresql://mlflow:$${MLFLOW_POSTGRES_PASSWORD}" not in mlflow_production
+
+    completed = subprocess.run(
+        ["python", "-c", encoder],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "MLFLOW_POSTGRES_PASSWORD": password},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "pa%3Ass%40word%2Fwith%3Freserved%23chars%25%26%2B%3D\n"
+
+
 def test_classroom_compose_binds_student_services_to_localhost() -> None:
     compose = (ROOT / "compose.yml").read_text()
 

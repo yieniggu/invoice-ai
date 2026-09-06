@@ -283,11 +283,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.mlflow
-    command: >-
-      mlflow server --host 0.0.0.0 --port 5000 --serve-artifacts
-      --backend-store-uri postgresql://mlflow:$${MLFLOW_POSTGRES_PASSWORD}@postgres-production:5432/mlflow
-      --artifacts-destination s3://mlflow-artifacts
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |-
+        password="$$(python -c 'import os; from urllib.parse import quote; print(quote(os.environ["MLFLOW_POSTGRES_PASSWORD"], safe=""))')"
+        exec mlflow server --host 0.0.0.0 --port 5000 --serve-artifacts \
+          --backend-store-uri "postgresql://mlflow:$${password}@postgres-production:5432/mlflow" \
+          --artifacts-destination s3://mlflow-artifacts
     environment:
+      MLFLOW_POSTGRES_PASSWORD: ${MLFLOW_POSTGRES_PASSWORD:-}
       MLFLOW_S3_ENDPOINT_URL: http://minio-production:9000
       AWS_ACCESS_KEY_ID: ${MLFLOW_OBJECT_ACCESS_KEY:-}
       AWS_SECRET_ACCESS_KEY: ${MLFLOW_OBJECT_SECRET_KEY:-}
