@@ -263,9 +263,13 @@ services:
     profiles: ["production-bootstrap"]
     image: minio/mc:RELEASE.2025-04-16T18-13-26Z
     entrypoint: ["/bin/sh", "-c"]
-    command: >-
-      until mc alias set production http://minio-production:9000 "$${MLFLOW_OBJECT_ACCESS_KEY}" "$${MLFLOW_OBJECT_SECRET_KEY}"; do sleep 1; done;
-      mc mb --ignore-existing production/mlflow-artifacts
+    command:
+      - |-
+        until mc alias set production http://minio-production:9000 "$${MLFLOW_OBJECT_ACCESS_KEY}" "$${MLFLOW_OBJECT_SECRET_KEY}"
+        do
+          sleep 1
+        done
+        mc mb --ignore-existing production/mlflow-artifacts
     environment:
       MLFLOW_OBJECT_ACCESS_KEY: ${MLFLOW_OBJECT_ACCESS_KEY:-}
       MLFLOW_OBJECT_SECRET_KEY: ${MLFLOW_OBJECT_SECRET_KEY:-}

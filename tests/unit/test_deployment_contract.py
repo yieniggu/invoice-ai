@@ -117,6 +117,18 @@ def test_minio_healthchecks_use_curl_available_in_the_pinned_image() -> None:
         assert "wget" not in definition
 
 
+def test_production_minio_initializer_passes_one_posix_script_to_sh() -> None:
+    compose = (ROOT / "compose.yml").read_text()
+    initializer = compose_service(compose, "minio-init-production")
+
+    assert 'entrypoint: ["/bin/sh", "-c"]' in initializer
+    assert "command:\n      - |-" in initializer
+    assert '"$${MLFLOW_OBJECT_ACCESS_KEY}"' in initializer
+    assert '"$${MLFLOW_OBJECT_SECRET_KEY}"' in initializer
+    assert "until mc alias set production" in initializer
+    assert "mc mb --ignore-existing production/mlflow-artifacts" in initializer
+
+
 def test_mlflow_services_share_a_reproducible_postgres_and_s3_image() -> None:
     compose = (ROOT / "compose.yml").read_text()
     dockerfile = (ROOT / "Dockerfile.mlflow").read_text()
