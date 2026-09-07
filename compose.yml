@@ -189,9 +189,7 @@ services:
 
   local-anchor-bootstrap:
     profiles: ["local", "classroom", "production"]
-    build:
-      context: .
-      target: classroom
+    image: ${INVOICEOPS_IMAGE:-invoiceops:unconfigured}
     # Docker creates named volumes as root; only this one-shot initializer needs write access.
     user: "0:0"
     command: ["python", "-m", "invoiceops.legacy.local_anchor_bootstrap"]

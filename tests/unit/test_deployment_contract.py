@@ -333,6 +333,8 @@ def test_local_anchor_bootstrap_exclusively_initializes_the_shared_manifest_volu
     bootstrap = compose_service(compose, "local-anchor-bootstrap")
 
     assert "local-anchor-deployments:/app/anchor-deployments:ro" in portal
+    assert "image: ${INVOICEOPS_IMAGE:-invoiceops:unconfigured}" in bootstrap
+    assert "build:" not in bootstrap
     assert 'user: "0:0"' in bootstrap
     assert "local-anchor-deployments:/app/anchor-deployments" in bootstrap
 
@@ -369,8 +371,15 @@ def test_production_resolved_compose_keeps_rpc_internal_only() -> None:
 
     resolved = json.loads(completed.stdout)
     anvil = resolved["services"]["anvil-classroom"]
+    bootstrap = resolved["services"]["local-anchor-bootstrap"]
     portal = resolved["services"]["portal-production"]
     assert "ports" not in anvil
+    assert bootstrap["image"] == "ghcr.io/acme/invoiceops@sha256:" + "a" * 64
+    assert "build" not in bootstrap
+    assert bootstrap["user"] == "0:0"
+    assert bootstrap["volumes"][0]["type"] == "volume"
+    assert bootstrap["volumes"][0]["source"] == "local-anchor-deployments"
+    assert bootstrap["volumes"][0]["target"] == "/app/anchor-deployments"
     assert portal["environment"]["INVOICEOPS_LOCAL_ANCHOR_MANIFEST"] == (
         "/app/anchor-deployments/local.json"
     )
