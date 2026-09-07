@@ -208,7 +208,9 @@ def resolve_deployment(path: str | Path = DEFAULT_MANIFEST_PATH) -> AnchorDeploy
         raise AnchorConfigurationError("deployment manifest signer must be an Ethereum address")
     if name is not None and (not isinstance(name, str) or not name.strip()):
         raise AnchorConfigurationError("deployment manifest name must be a non-empty string")
-    return AnchorDeployment(contract, configured_chain_id, address, signer, name)
+    return AnchorDeployment(
+        contract, configured_chain_id, Web3.to_checksum_address(address), signer, name
+    )
 
 
 def _contract(web3: Web3, address: str) -> Any:

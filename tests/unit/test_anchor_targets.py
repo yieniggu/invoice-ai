@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from web3 import Web3
 
 from invoiceops import anchor_targets
 from invoiceops.anchor import AnchorConfigurationError, RemoteSigner
@@ -11,9 +12,10 @@ ROOT_HASH = "a" * 64
 ADDRESS = "0x1234567890123456789012345678901234567890"
 AUTHORIZED_SIGNER = "0xAbCdEf0123456789aBCdEf0123456789AbCdEf01"
 OTHER_SIGNER = "0x1111111111111111111111111111111111111111"
+LOWERCASE_ADDRESS = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
 
 
-def _configure_remote_target(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def _configure_remote_target(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     manifest = tmp_path / "remote.json"
     manifest.write_text(
         json.dumps(
@@ -29,6 +31,7 @@ def _configure_remote_target(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     monkeypatch.setenv("INVOICEOPS_REMOTE_ANCHOR_MANIFEST", str(manifest))
     monkeypatch.setenv("INVOICEOPS_REMOTE_ANCHOR_RPC_URL", "https://rpc.example.test")
     monkeypatch.setenv("INVOICEOPS_REMOTE_ANCHOR_PRIVATE_KEY", "test-key-not-rendered")
+    return manifest
 
 
 def test_remote_preflight_rejects_an_incorrect_chain(
@@ -65,6 +68,40 @@ def test_remote_preflight_rejects_a_signer_not_declared_by_manifest(
         anchor_targets.preflight_anchor_target(
             "remote", SimpleNamespace(status="verified", root_hash=ROOT_HASH), False
         )
+
+
+def test_remote_preflight_checksums_a_lowercase_manifest_address(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest = _configure_remote_target(monkeypatch, tmp_path)
+    payload = json.loads(manifest.read_text())
+    payload["address"] = LOWERCASE_ADDRESS
+    manifest.write_text(json.dumps(payload))
+    checked_addresses: list[str] = []
+    web3 = SimpleNamespace(
+        eth=SimpleNamespace(
+            get_code=lambda address: checked_addresses.append(address) or b"contract",
+            contract=lambda **_kwargs: SimpleNamespace(
+                functions=SimpleNamespace(
+                    signer=lambda: SimpleNamespace(call=lambda: AUTHORIZED_SIGNER)
+                )
+            ),
+        )
+    )
+    monkeypatch.setattr(anchor_targets, "chain", lambda *_args, **_kwargs: web3)
+    monkeypatch.setattr(
+        anchor_targets,
+        "remote_signer_from_environment",
+        lambda *_args: RemoteSigner(address=AUTHORIZED_SIGNER, private_key="in-memory"),
+    )
+    monkeypatch.setattr(anchor_targets, "is_root_registered", lambda *_args: False)
+
+    preflight = anchor_targets.preflight_anchor_target(
+        "remote", SimpleNamespace(status="verified", root_hash=ROOT_HASH), False
+    )
+
+    assert preflight.deployment.address == Web3.to_checksum_address(LOWERCASE_ADDRESS)
+    assert checked_addresses == [Web3.to_checksum_address(LOWERCASE_ADDRESS)]
 
 
 def test_local_target_uses_the_configured_internal_rpc_url(
