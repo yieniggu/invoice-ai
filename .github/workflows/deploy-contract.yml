@@ -5,7 +5,7 @@ name: deploy-contract
   workflow_dispatch:
     inputs:
       environment:
-        description: GitHub Environment containing Arbitrum Sepolia secrets
+        description: GitHub Environment containing Gnosis Chiado deployment configuration
         required: true
         type: environment
       verify_source:
@@ -30,53 +30,63 @@ jobs:
           docker run --rm -v "$PWD/contracts:/src" -w /src ghcr.io/foundry-rs/foundry:stable forge test
       - name: Deploy EvidenceRootAnchor
         env:
-          ARBITRUM_SEPOLIA_RPC_URL: ${{ secrets.ARBITRUM_SEPOLIA_RPC_URL }}
+          GNOSIS_CHIADO_RPC_URL: ${{ secrets.GNOSIS_CHIADO_RPC_URL }}
           PRIVATE_KEY: ${{ secrets.EVIDENCE_ROOT_ANCHOR_DEPLOYER_PRIVATE_KEY }}
           EVIDENCE_ROOT_ANCHOR_SIGNER: ${{ vars.EVIDENCE_ROOT_ANCHOR_SIGNER }}
         run: |
-          test -n "$ARBITRUM_SEPOLIA_RPC_URL"
+          test -n "$GNOSIS_CHIADO_RPC_URL"
           test -n "$PRIVATE_KEY"
           test -n "$EVIDENCE_ROOT_ANCHOR_SIGNER"
+          deployer_address="$(docker run --rm -e PRIVATE_KEY ghcr.io/foundry-rs/foundry:stable cast wallet address --private-key "$PRIVATE_KEY")"
+          printf '%s\n' "$deployer_address"
           docker run --rm -v "$PWD/contracts:/src" -w /src \
-            -e ARBITRUM_SEPOLIA_RPC_URL -e PRIVATE_KEY -e EVIDENCE_ROOT_ANCHOR_SIGNER \
-             ghcr.io/foundry-rs/foundry:stable \
-             forge script script/DeployEvidenceRootAnchor.s.sol:DeployEvidenceRootAnchor \
-             --rpc-url "$ARBITRUM_SEPOLIA_RPC_URL" --broadcast
-          broadcast="$(ls -t contracts/broadcast/DeployEvidenceRootAnchor.s.sol/421614/run-latest.json 2>/dev/null | tr '\n' ' ')"
+            -e GNOSIS_CHIADO_RPC_URL -e PRIVATE_KEY -e EVIDENCE_ROOT_ANCHOR_SIGNER \
+            ghcr.io/foundry-rs/foundry:stable \
+            forge script script/DeployEvidenceRootAnchor.s.sol:DeployEvidenceRootAnchor \
+            --rpc-url "$GNOSIS_CHIADO_RPC_URL" --private-key "$PRIVATE_KEY" --broadcast
+          broadcast="$(ls -t contracts/broadcast/DeployEvidenceRootAnchor.s.sol/10200/run-latest.json 2>/dev/null | tr '\n' ' ')"
           test -n "$broadcast"
           address="$(jq -r '.transactions[] | select(.contractName == "EvidenceRootAnchor") | .contractAddress' $broadcast | tail -n 1)"
-          tx_hash="$(jq -r '.transactions[] | select(.contractName == "EvidenceRootAnchor") | .transactionHash' $broadcast | tail -n 1)"
+          tx_hash="$(jq -r '.transactions[] | select(.contractName == "EvidenceRootAnchor") | .hash' $broadcast | tail -n 1)"
+          test -n "$address"
           test "$address" != "null"
+          test -n "$tx_hash"
           test "$tx_hash" != "null"
+          receipt_status="$(docker run --rm -e GNOSIS_CHIADO_RPC_URL ghcr.io/foundry-rs/foundry:stable cast receipt "$tx_hash" status --rpc-url "$GNOSIS_CHIADO_RPC_URL")"
+          test "$receipt_status" = "1"
+          runtime_bytecode="$(docker run --rm -e GNOSIS_CHIADO_RPC_URL ghcr.io/foundry-rs/foundry:stable cast code "$address" --rpc-url "$GNOSIS_CHIADO_RPC_URL")"
+          test -n "$runtime_bytecode"
+          test "$runtime_bytecode" != "0x"
           printf 'CONTRACT_ADDRESS=%s\nDEPLOY_TX_HASH=%s\n' "$address" "$tx_hash" >> "$GITHUB_ENV"
-          printf '{"chain_id":421614,"contract":"EvidenceRootAnchor","address":"%s","transaction_hash":"%s"}\n' "$address" "$tx_hash" > contracts/deployment-result.json
+          printf '{"chain_id":10200,"contract":"EvidenceRootAnchor","address":"%s","transaction_hash":"%s"}\n' "$address" "$tx_hash" > contracts/deployment-result.json
       - name: Read-only contract smoke check
         env:
-          ARBITRUM_SEPOLIA_RPC_URL: ${{ secrets.ARBITRUM_SEPOLIA_RPC_URL }}
+          GNOSIS_CHIADO_RPC_URL: ${{ secrets.GNOSIS_CHIADO_RPC_URL }}
         run: |
           docker run --rm ghcr.io/foundry-rs/foundry:stable cast call "$CONTRACT_ADDRESS" \
             "isRootRegistered(bytes32)(bool)" \
             "0x0000000000000000000000000000000000000000000000000000000000000000" \
-            --rpc-url "$ARBITRUM_SEPOLIA_RPC_URL" | grep -Fx false
+            --rpc-url "$GNOSIS_CHIADO_RPC_URL" | grep -Fx false
       - name: Verify source when explicitly requested
         if: ${{ inputs.verify_source }}
         env:
-          ARBISCAN_API_KEY: ${{ secrets.ARBISCAN_API_KEY }}
           EVIDENCE_ROOT_ANCHOR_SIGNER: ${{ vars.EVIDENCE_ROOT_ANCHOR_SIGNER }}
         run: |
-          test -n "$ARBISCAN_API_KEY"
           test -n "$EVIDENCE_ROOT_ANCHOR_SIGNER"
           constructor_args="$(docker run --rm ghcr.io/foundry-rs/foundry:stable cast abi-encode "constructor(address)" "$EVIDENCE_ROOT_ANCHOR_SIGNER")"
-          docker run --rm -v "$PWD/contracts:/src" -w /src -e ARBISCAN_API_KEY \
-            ghcr.io/foundry-rs/foundry:stable forge verify-contract --watch --chain-id 421614 \
-            --verifier etherscan --verifier-api-key "$ARBISCAN_API_KEY" --constructor-args "$constructor_args" \
-            "$CONTRACT_ADDRESS" src/EvidenceRootAnchor.sol:EvidenceRootAnchor
+          verify_source() {
+            docker run --rm -v "$PWD/contracts:/src" -w /src \
+              ghcr.io/foundry-rs/foundry:stable forge verify-contract --chain-id 10200 \
+              --verifier blockscout --verifier-url 'https://gnosis-chiado.blockscout.com/api?' --constructor-args "$constructor_args" \
+              "$CONTRACT_ADDRESS" src/EvidenceRootAnchor.sol:EvidenceRootAnchor
+          }
+          verify_source || { sleep 60; verify_source; }
       - name: Publish deployment evidence
         run: |
           {
             echo '## Contract deployment'
             echo
-            echo '- Network: Arbitrum Sepolia (421614)'
+            echo '- Network: Gnosis Chiado (10200)'
             echo '- Contract: `EvidenceRootAnchor`'
             echo "- Address: \`$CONTRACT_ADDRESS\`"
             echo "- Deployment transaction: \`$DEPLOY_TX_HASH\`"

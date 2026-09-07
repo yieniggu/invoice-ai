@@ -151,6 +151,7 @@ def test_secure_mode_sets_secure_session_cookie(
     db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("INVOICEOPS_MODE", "secure")
+    monkeypatch.delenv("INVOICEOPS_SESSION_COOKIE_SECURE", raising=False)
     monkeypatch.setenv(
         "INVOICEOPS_SESSION_SECRET", "secure-test-secret-that-is-not-the-demo-secret"
     )
@@ -169,6 +170,46 @@ def test_secure_mode_sets_secure_session_cookie(
     assert "secure" in cookie
     assert "httponly" in cookie
     assert "samesite=lax" in cookie
+
+
+def test_secure_mode_allows_http_session_cookie_override(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INVOICEOPS_MODE", "secure")
+    monkeypatch.setenv(
+        "INVOICEOPS_SESSION_SECRET", "secure-test-secret-that-is-not-the-demo-secret"
+    )
+    monkeypatch.setenv("INVOICEOPS_DEMO_USERNAME", "secure-analyst")
+    monkeypatch.setenv("INVOICEOPS_DEMO_PASSWORD", "secure-password")
+    monkeypatch.setenv("INVOICEOPS_ALLOWED_DECISION_PRINCIPALS", "secure-analyst")
+    monkeypatch.setenv("INVOICEOPS_SESSION_COOKIE_SECURE", "false")
+    client = TestClient(create_app(db_path))
+
+    response = client.post(
+        "/login",
+        data={"username": "secure-analyst", "password": "secure-password"},
+        follow_redirects=False,
+    )
+
+    assert "secure" not in response.headers["set-cookie"].lower()
+    assert client.get("/invoices").status_code == 200
+
+
+@pytest.mark.parametrize("value", ["False", "0", "yes", ""])
+def test_session_cookie_secure_override_rejects_invalid_boolean(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("INVOICEOPS_MODE", "secure")
+    monkeypatch.setenv(
+        "INVOICEOPS_SESSION_SECRET", "secure-test-secret-that-is-not-the-demo-secret"
+    )
+    monkeypatch.setenv("INVOICEOPS_DEMO_USERNAME", "secure-analyst")
+    monkeypatch.setenv("INVOICEOPS_DEMO_PASSWORD", "secure-password")
+    monkeypatch.setenv("INVOICEOPS_ALLOWED_DECISION_PRINCIPALS", "secure-analyst")
+    monkeypatch.setenv("INVOICEOPS_SESSION_COOKIE_SECURE", value)
+
+    with pytest.raises(ValueError, match="INVOICEOPS_SESSION_COOKIE_SECURE"):
+        create_app(db_path)
 
 
 def test_invoice_list(db_path: Path) -> None:

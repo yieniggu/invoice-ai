@@ -25,7 +25,7 @@ def auth_settings() -> AuthSettings:
             username=os.environ.get("INVOICEOPS_DEMO_USERNAME", DEMO_USERNAME),
             password=os.environ.get("INVOICEOPS_DEMO_PASSWORD", DEMO_PASSWORD),
             session_secret=os.environ.get("INVOICEOPS_SESSION_SECRET", SESSION_SECRET),
-            secure_cookies=False,
+            secure_cookies=_session_cookie_secure(default=False),
             allowed_decision_principals=frozenset(),
         )
     if mode != "secure":
@@ -41,7 +41,7 @@ def auth_settings() -> AuthSettings:
         username=username,
         password=password,
         session_secret=session_secret,
-        secure_cookies=True,
+        secure_cookies=_session_cookie_secure(default=True),
         allowed_decision_principals=allowed_decision_principals,
     )
 
@@ -51,6 +51,17 @@ def _required_environment_value(name: str) -> str:
     if not value:
         raise ValueError(f"{name} must be set in secure mode.")
     return value
+
+
+def _session_cookie_secure(*, default: bool) -> bool:
+    value = os.environ.get("INVOICEOPS_SESSION_COOKIE_SECURE")
+    if value is None:
+        return default
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ValueError("INVOICEOPS_SESSION_COOKIE_SECURE must be 'true' or 'false'.")
 
 
 def _allowed_decision_principals() -> frozenset[str]:

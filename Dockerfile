@@ -17,8 +17,8 @@ COPY migrations ./migrations
 COPY src ./src
 RUN uv sync --locked
 
-RUN addgroup --system invoiceops && \
-    adduser --system --ingroup invoiceops invoiceops && \
+RUN addgroup --system --gid 101 invoiceops && \
+    adduser --system --uid 100 --ingroup invoiceops invoiceops && \
     mkdir -p /app/var && \
     chown -R invoiceops:invoiceops /app
 

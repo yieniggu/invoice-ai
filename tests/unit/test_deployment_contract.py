@@ -131,6 +131,111 @@ def test_production_portal_forwards_the_complete_secure_auth_contract() -> None:
     ):
         assert f"{name}: ${{{name}:-}}" in portal_production
 
+    assert "INVOICEOPS_SESSION_COOKIE_SECURE: ${INVOICEOPS_SESSION_COOKIE_SECURE:-true}" in (
+        portal_production
+    )
+
+
+def test_production_image_runs_portal_as_the_documented_data_volume_user() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text()
+
+    assert "addgroup --system --gid 101 invoiceops" in dockerfile
+    assert "adduser --system --uid 100 --ingroup invoiceops invoiceops" in dockerfile
+    assert "USER invoiceops" in dockerfile
+
+
+@pytest.mark.parametrize(
+    ("metadata", "required_bits", "expected"),
+    (
+        ("100:101:770", "7", "0"),
+        ("100:101:750", "7", "0"),
+        ("0:0:755", "1", "0"),
+        ("0:0:750", "1", "1"),
+    ),
+)
+def test_production_data_mount_access_uses_the_image_service_user(
+    metadata: str, required_bits: str, expected: str
+) -> None:
+    script = ROOT / "scripts" / "lab-preflight.sh"
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                'source "$1"; set +e; stat() { printf "%s\\n" "$STAT_METADATA"; }; '
+                'service_user_access /srv/invoiceops/var "$REQUIRED_BITS"; printf "%s\\n" "$?"'
+            ),
+            "bash",
+            str(script),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "STAT_METADATA": metadata,
+            "REQUIRED_BITS": required_bits,
+        },
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == f"{expected}\n"
+
+
+@pytest.mark.parametrize(
+    ("final_metadata", "ancestor_metadata", "expected"),
+    (
+        ("100:101:770", "0:0:755", "0"),
+        ("100:101:750", "0:0:755", "1"),
+        ("100:101:770", "0:0:700", "1"),
+    ),
+)
+def test_production_data_mount_requires_exact_directory_and_service_user_traversal(
+    final_metadata: str, ancestor_metadata: str, expected: str
+) -> None:
+    script = ROOT / "scripts" / "lab-preflight.sh"
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                'source "$1"; set +e; directory_exists() { return 0; }; '
+                'stat() { if [ "$3" = /srv/invoiceops/var ]; then printf "%s\\n" "$FINAL_METADATA"; '
+                'else printf "%s\\n" "$ANCESTOR_METADATA"; fi; }; '
+                'INVOICEOPS_DB_PATH=/app/var/invoiceops.db; INVOICEOPS_DATA_VOLUME=/srv/invoiceops/var; '
+                '( validate_production_data_mount >/dev/null 2>&1 ); printf "%s\\n" "$?"'
+            ),
+            "bash",
+            str(script),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "FINAL_METADATA": final_metadata,
+            "ANCESTOR_METADATA": ancestor_metadata,
+        },
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == f"{expected}\n"
+
+
+def test_production_portal_mount_contract_is_canonical_and_checked_before_deploy() -> None:
+    compose = (ROOT / "compose.yml").read_text()
+    preflight = (ROOT / "scripts" / "lab-preflight.sh").read_text()
+    portal_production = compose_service(compose, "portal-production")
+
+    assert "INVOICEOPS_DB_PATH: ${INVOICEOPS_DB_PATH:-/app/var/invoiceops.db}" in portal_production
+    assert "${INVOICEOPS_DATA_VOLUME:-/srv/invoiceops-unconfigured}:/app/var" in portal_production
+    assert "readonly PORTAL_DB_PATH='/app/var/invoiceops.db'" in preflight
+    assert "readonly PORTAL_DATA_VOLUME='/srv/invoiceops/var'" in preflight
+    assert "readonly PORTAL_UID='100'" in preflight
+    assert "readonly PORTAL_GID='101'" in preflight
+    assert '"$PORTAL_UID:$PORTAL_GID:770"' in preflight
+    assert 'for path in / /srv /srv/invoiceops; do' in preflight
+
 
 def test_production_minio_initializer_passes_one_posix_script_to_sh() -> None:
     compose = (ROOT / "compose.yml").read_text()
@@ -416,6 +521,79 @@ def test_production_preflight_remains_digest_only(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    ("name", "value", "message"),
+    (
+        ("INVOICEOPS_DB_PATH", "/srv/invoiceops/invoiceops.db", "INVOICEOPS_DB_PATH"),
+        ("INVOICEOPS_DATA_VOLUME", "/srv/invoiceops", "INVOICEOPS_DATA_VOLUME"),
+    ),
+)
+def test_production_preflight_rejects_unsafe_data_mount_variables_before_compose_config(
+    tmp_path: Path, name: str, value: str, message: str
+) -> None:
+    docker = tmp_path / "docker"
+    log = tmp_path / "docker.log"
+    docker.write_text('#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$DOCKER_LOG"\nexit 0\n')
+    docker.chmod(0o755)
+    environment = {
+        **os.environ,
+        "INVOICEOPS_IMAGE": "ghcr.io/acme/invoiceops@sha256:" + "a" * 64,
+        "INVOICEOPS_DB_PATH": "/app/var/invoiceops.db",
+        "INVOICEOPS_DATA_VOLUME": "/srv/invoiceops/var",
+        "INVOICEOPS_DEMO_USERNAME": "secure-analyst",
+        "INVOICEOPS_DEMO_PASSWORD": "secure-password",
+        "INVOICEOPS_SESSION_SECRET": "test-session-secret",
+        "INVOICEOPS_ALLOWED_DECISION_PRINCIPALS": "secure-analyst",
+        "DOCKER_LOG": str(log),
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+    }
+    environment[name] = value
+
+    completed = subprocess.run(
+        [str(ROOT / "scripts" / "lab-preflight.sh"), "production"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert completed.returncode == 1
+    assert f"Invalid production data mount: {message}" in completed.stderr
+    assert "config -q" not in log.read_text()
+
+
+def test_production_preflight_rejects_an_absent_data_directory_before_compose_config(
+    tmp_path: Path,
+) -> None:
+    docker = tmp_path / "docker"
+    log = tmp_path / "docker.log"
+    docker.write_text('#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$DOCKER_LOG"\nexit 0\n')
+    docker.chmod(0o755)
+
+    completed = subprocess.run(
+        [str(ROOT / "scripts" / "lab-preflight.sh"), "production"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "INVOICEOPS_IMAGE": "ghcr.io/acme/invoiceops@sha256:" + "a" * 64,
+            "INVOICEOPS_DB_PATH": "/app/var/invoiceops.db",
+            "INVOICEOPS_DATA_VOLUME": "/srv/invoiceops/var",
+            "INVOICEOPS_DEMO_USERNAME": "secure-analyst",
+            "INVOICEOPS_DEMO_PASSWORD": "secure-password",
+            "INVOICEOPS_SESSION_SECRET": "test-session-secret",
+            "INVOICEOPS_ALLOWED_DECISION_PRINCIPALS": "secure-analyst",
+            "DOCKER_LOG": str(log),
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        },
+    )
+
+    assert completed.returncode == 1
+    assert "must exist as a directory" in completed.stderr
+    assert "config -q" not in log.read_text()
+
+
+@pytest.mark.parametrize(
     "missing_name",
     (
         "INVOICEOPS_DEMO_USERNAME",
@@ -473,6 +651,98 @@ def test_operator_runbooks_resolve_and_reuse_the_persisted_digest() -> None:
     assert 'INVOICEOPS_IMAGE="$(</etc/invoiceops/image-ref)"' in runbook_05
     assert "read -r -p" not in runbook_05
     assert "Pegue el IMAGE_REF" not in runbook_05
+
+
+def test_portal_runbooks_keep_the_proven_runtime_identity_and_scoped_reset() -> None:
+    runbooks = ROOT.parent.parent / "clases" / "03_02 de Septiembre" / "Clase4_Runbooks_Practicos"
+    runbook_05 = (runbooks / "05_ENV_SECRETS_LOGS_Y_TRAZABILIDAD.md").read_text()
+    runbook_05b = (runbooks / "05B_DEPLOY_MANUAL_PORTAL_EN_VM.md").read_text()
+    runbook_15 = (runbooks / "15_PREFLIGHT_Y_TROUBLESHOOTING.md").read_text()
+
+    for runbook in (runbook_05, runbook_05b):
+        assert "999:999" not in runbook
+        assert "999" not in runbook
+    assert "install -d -o 100 -g 101 -m 0770" in runbook_05
+    assert "docker compose --profile production rm -f portal-production model-api-production proxy-production" in runbook_05b
+    assert "rm -f /srv/invoiceops/var/invoiceops.db /srv/invoiceops/var/invoiceops.db-wal /srv/invoiceops/var/invoiceops.db-shm" in runbook_05b
+    assert "docker compose --profile production run --rm --no-deps portal-production" in runbook_15
+    assert "compose_write_probe_exit" in runbook_15
+
+
+def test_http_classroom_session_override_is_explicit_and_scoped_to_portal() -> None:
+    runbooks = ROOT.parent.parent / "clases" / "03_02 de Septiembre" / "Clase4_Runbooks_Practicos"
+    runbook_05 = (runbooks / "05_ENV_SECRETS_LOGS_Y_TRAZABILIDAD.md").read_text()
+    runbook_05b = (runbooks / "05B_DEPLOY_MANUAL_PORTAL_EN_VM.md").read_text()
+    runbook_09 = (runbooks / "09_PREDICTION_EVIDENCE_Y_ANCHOR_REMOTO.md").read_text()
+
+    assert runbook_05.count("INVOICEOPS_SESSION_COOKIE_SECURE") >= 8
+    assert "INVOICEOPS_SESSION_COOKIE_SECURE=false" in runbook_05
+    assert "INVOICEOPS_SESSION_COOKIE_SECURE=true" in runbook_05
+    assert "pueden ser interceptados" in runbook_05
+    assert "Prueba de inicio de sesión:" in runbook_05b
+    assert "INVOICEOPS_SESSION_COOKIE_SECURE=false" in runbook_05b
+    assert "INVOICEOPS_SESSION_COOKIE_SECURE=false" in runbook_09
+
+
+def test_foundry_runbook_uses_an_ignored_local_env_template_and_preserves_vm_identity() -> None:
+    template = (ROOT / "contracts" / ".env.example").read_text()
+    runbooks = ROOT.parent.parent / "clases" / "03_02 de Septiembre" / "Clase4_Runbooks_Practicos"
+    runbook_07 = (runbooks / "07_DEPLOY_CONTRATO_CON_REMIX.md").read_text()
+    runbook_08 = (runbooks / "08_DEPLOY_Y_VERIFICACION_CON_FOUNDRY.md").read_text()
+    technical_runbook = (ROOT / "docs" / "gnosis-chiado-anchor-runbook.md").read_text()
+
+    assert template == (
+        "GNOSIS_CHIADO_RPC_URL=https://rpc.chiadochain.net\n"
+        "PRIVATE_KEY=\n"
+        "EVIDENCE_ROOT_ANCHOR_SIGNER=\n"
+    )
+    assert ".env" in (ROOT / ".gitignore").read_text().splitlines()
+    for runbook in (runbook_08, technical_runbook):
+        assert "cp .env.example .env" in runbook
+        assert "chmod 600 .env" in runbook
+        assert "set -a; . ./.env; set +a" in runbook
+        assert 'cast wallet address --private-key "$PRIVATE_KEY"' in runbook
+        assert '--private-key "$PRIVATE_KEY" --broadcast' in runbook
+        assert "no corresponde a un contrato desplegado on-chain" in runbook
+        assert "run-latest.json" in runbook
+        assert "CONTRACT_ADDRESS" in runbook
+        assert "DEPLOY_TX_HASH" in runbook
+        assert '| .hash' in runbook
+        assert '| .transactionHash' not in runbook
+        assert 'test -n "$CONTRACT_ADDRESS"' in runbook
+        assert 'test -n "$DEPLOY_TX_HASH"' in runbook
+        assert 'cast receipt "$DEPLOY_TX_HASH" status' in runbook
+        assert 'cast code "$CONTRACT_ADDRESS"' in runbook
+        assert 'test "$runtime_bytecode" != "0x"' in runbook
+        assert "verify_source || { sleep 60; verify_source; }" in runbook
+        assert "forge verify-contract --chain-id 10200" in runbook
+        assert "forge verify-contract --watch" not in runbook
+        assert 'test "$chain_id" = "10200"' in runbook
+    assert "no ejecute `cd contracts` otra vez" in runbook_08
+    assert "/etc/invoiceops/contract-manifest.json" in runbook_07
+    assert "/etc/invoiceops/contract-manifest.json" in runbook_08
+
+
+def test_contract_deploy_workflow_passes_the_private_key_to_foundry_without_printing_it() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "deploy-contract.yml").read_text()
+
+    validation = 'cast wallet address --private-key "$PRIVATE_KEY"'
+    broadcast = '--rpc-url "$GNOSIS_CHIADO_RPC_URL" --private-key "$PRIVATE_KEY" --broadcast'
+    metadata = 'broadcast="$(ls -t contracts/broadcast/DeployEvidenceRootAnchor.s.sol/10200/run-latest.json'
+
+    assert validation in workflow
+    assert broadcast in workflow
+    assert workflow.index(validation) < workflow.index(broadcast) < workflow.index(metadata)
+    assert "printf '%s\\n' \"$deployer_address\"" in workflow
+    assert '| .hash' in workflow
+    assert '| .transactionHash' not in workflow
+    assert 'test -n "$address"' in workflow
+    assert 'test -n "$tx_hash"' in workflow
+    assert 'cast receipt "$tx_hash" status' in workflow
+    assert 'cast code "$address"' in workflow
+    assert 'test "$runtime_bytecode" != "0x"' in workflow
+    assert "verify_source || { sleep 60; verify_source; }" in workflow
+    assert "forge verify-contract --watch" not in workflow
 
 
 def test_rollback_uses_normalized_digest_reference_before_compose(tmp_path: Path) -> None:
@@ -666,7 +936,7 @@ def test_full_lab_deploy_reaches_compose_up_after_a_valid_champion(tmp_path: Pat
     assert "compose --profile full-lab exec -T model-api python -c" in calls
 
 
-def test_production_deploy_rejects_a_missing_champion_before_every_compose_up(
+def test_production_deploy_rejects_unsafe_data_mount_before_champion_check(
     tmp_path: Path,
 ) -> None:
     docker = tmp_path / "docker"
@@ -704,88 +974,23 @@ def test_production_deploy_rejects_a_missing_champion_before_every_compose_up(
     )
 
     assert completed.returncode == 1
-    assert "requires a ready invoice-review@champion" in completed.stderr
+    assert "INVOICEOPS_DB_PATH must be /app/var/invoiceops.db" in completed.stderr
     calls = [shlex.split(call) for call in log.read_text().splitlines()]
-    assert [
-        "compose",
-        "--profile",
-        "production",
-        "run",
-        "--rm",
-        "--no-deps",
-        "model-api-production",
-        "python",
-        "-m",
-        "invoiceops.ml.bootstrap",
-        "--verify-champion",
-    ] in calls
+    assert not any(command[:2] == ["compose", "run"] for command in calls)
     assert not any(command[:2] == ["compose", "up"] or "up" in command[1:] for command in calls)
 
 
-def test_production_deploy_starts_only_serving_services_after_a_valid_champion(
-    tmp_path: Path,
-) -> None:
-    docker = tmp_path / "docker"
-    log = tmp_path / "docker.log"
-    docker.write_text(
-        "#!/usr/bin/env bash\n"
-        'printf \'%q \' "$@" >> "$DOCKER_LOG"\n'
-        "printf '\\n' >> \"$DOCKER_LOG\"\n"
-        'case "$*" in\n'
-        "  'compose version'|'compose --profile production config -q') exit 0 ;;\n"
-        "  'compose --profile production run --rm --no-deps model-api-production python -m invoiceops.ml.bootstrap --verify-champion') exit 0 ;;\n"
-        "  'compose --profile production up --detach portal-production model-api-production proxy-production') exit 0 ;;\n"
-        "  'compose --profile production ps --quiet '*) printf 'service-id\\n' ;;\n"
-        "  'inspect '*) printf 'healthy\\n' ;;\n"
-        "  'compose --profile production exec -T '*) exit 0 ;;\n"
-        "  *) exit 1 ;;\n"
-        "esac\n"
-    )
-    docker.chmod(0o755)
+def test_production_deploy_limits_serving_services_after_preflight() -> None:
+    deploy = (ROOT / "scripts" / "deploy-lab.sh").read_text()
 
-    completed = subprocess.run(
-        [str(ROOT / "scripts" / "deploy-lab.sh"), "production"],
-        check=False,
-        capture_output=True,
-        text=True,
-        env={
-            **os.environ,
-            "APPLY": "1",
-            "DEPLOY_HEALTH_ATTEMPTS": "1",
-            "DEPLOY_HEALTH_INTERVAL_SECONDS": "0",
-            "INVOICEOPS_IMAGE": "ghcr.io/acme/invoiceops@sha256:" + "a" * 64,
-            "INVOICEOPS_DB_PATH": "/srv/invoiceops/invoiceops.db",
-            "INVOICEOPS_DATA_VOLUME": "/srv/invoiceops",
-            "INVOICEOPS_DEMO_USERNAME": "secure-analyst",
-            "INVOICEOPS_DEMO_PASSWORD": "secure-password",
-            "INVOICEOPS_SESSION_SECRET": "test-session-secret",
-            "INVOICEOPS_ALLOWED_DECISION_PRINCIPALS": "secure-analyst",
-            "DOCKER_LOG": str(log),
-            "PATH": f"{tmp_path}:{os.environ['PATH']}",
-        },
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    calls = [shlex.split(call) for call in log.read_text().splitlines()]
-    compose_up_calls = [command for command in calls if "up" in command]
-    assert compose_up_calls == [
-        [
-            "compose",
-            "--profile",
-            "production",
-            "up",
-            "--detach",
-            "portal-production",
-            "model-api-production",
-            "proxy-production",
-        ]
-    ]
-    assert not any("--remove-orphans" in command for command in compose_up_calls)
-    assert not any(
-        service in command
-        for command in calls
-        for service in ("model-bootstrap-production", "model-release-production")
-    )
+    assert 'production) printf \'%s\\n\' portal-production model-api-production proxy-production ;;' in deploy
+    assert (
+        'if [ "$profile" = "production" ]; then\n'
+        '  compose_up=(up --detach)\n'
+        'else\n'
+        '  compose_up=(up --detach --remove-orphans)\n'
+        'fi'
+    ) in deploy
 
 
 def test_deploy_collects_diagnostics_without_rollback_on_unhealthy_service(
