@@ -572,29 +572,36 @@ def main() -> None:
         else:
             deployment = resolve_deployment(args.manifest)
             web3 = chain(args.rpc_url, expected_chain_id=deployment.chain_id)
-            signer = (
-                remote_signer_from_environment(web3, args.signer_env)
-                if args.command == "register" and args.signer_env
-                else local_signer(web3)
-            )
             registered = is_root_registered(web3, deployment.address, args.root_hash)
-            if args.command == "register" and not registered:
-                receipt = register_root(web3, deployment.address, signer, args.root_hash)
-                registered = True
+            if args.command == "query":
                 result = {
                     "address": deployment.address,
                     "chain_id": deployment.chain_id,
                     "registered": registered,
-                    "signer": signer.address if isinstance(signer, RemoteSigner) else signer,
-                    "transaction_hash": Web3.to_hex(receipt["transactionHash"]),
                 }
             else:
-                result = {
-                    "address": deployment.address,
-                    "chain_id": deployment.chain_id,
-                    "registered": registered,
-                    "signer": signer.address if isinstance(signer, RemoteSigner) else signer,
-                }
+                signer = (
+                    remote_signer_from_environment(web3, args.signer_env)
+                    if args.command == "register" and args.signer_env
+                    else local_signer(web3)
+                )
+                if args.command == "register" and not registered:
+                    receipt = register_root(web3, deployment.address, signer, args.root_hash)
+                    registered = True
+                    result = {
+                        "address": deployment.address,
+                        "chain_id": deployment.chain_id,
+                        "registered": registered,
+                        "signer": signer.address if isinstance(signer, RemoteSigner) else signer,
+                        "transaction_hash": Web3.to_hex(receipt["transactionHash"]),
+                    }
+                else:
+                    result = {
+                        "address": deployment.address,
+                        "chain_id": deployment.chain_id,
+                        "registered": registered,
+                        "signer": signer.address if isinstance(signer, RemoteSigner) else signer,
+                    }
     except AnchorError as error:
         parser.error(str(error))
     print(json.dumps(result, indent=2, sort_keys=True))

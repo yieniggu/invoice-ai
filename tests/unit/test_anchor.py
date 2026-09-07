@@ -265,6 +265,63 @@ def test_anchor_cli_reuses_the_python_api(monkeypatch: pytest.MonkeyPatch, capsy
     }
 
 
+def test_query_cli_does_not_load_a_signer_for_a_remote_rpc(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    from invoiceops import anchor
+
+    deployment = SimpleNamespace(address=ADDRESS, chain_id=421614)
+    monkeypatch.setattr(anchor, "resolve_deployment", lambda manifest: deployment)
+    monkeypatch.setattr(
+        anchor,
+        "chain",
+        lambda rpc_url, expected_chain_id=None: (
+            "remote-chain"
+            if (rpc_url, expected_chain_id) == ("https://remote-rpc.example", 421614)
+            else pytest.fail("query did not use the Remote RPC and manifest chain ID")
+        ),
+    )
+    monkeypatch.setattr(
+        anchor,
+        "local_signer",
+        lambda web3: pytest.fail("query must not resolve a local signer"),
+    )
+    monkeypatch.setattr(
+        anchor,
+        "remote_signer_from_environment",
+        lambda web3, variable_name: pytest.fail("query must not load a remote signer"),
+    )
+    monkeypatch.setattr(
+        anchor,
+        "is_root_registered",
+        lambda web3, address, root_hash: (
+            web3 == "remote-chain" and address == ADDRESS and root_hash == ROOT_HASH
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "anchor",
+            "query",
+            "--manifest",
+            "/run/invoiceops/contract-manifest.json",
+            "--rpc-url",
+            "https://remote-rpc.example",
+            "--root-hash",
+            ROOT_HASH,
+        ],
+    )
+
+    anchor.main()
+
+    assert json.loads(capsys.readouterr().out) == {
+        "address": ADDRESS,
+        "chain_id": 421614,
+        "registered": True,
+    }
+
+
 def test_batch_anchor_cli_uses_the_persisted_batch_root(
     monkeypatch: pytest.MonkeyPatch, capsys, tmp_path: Path
 ) -> None:
