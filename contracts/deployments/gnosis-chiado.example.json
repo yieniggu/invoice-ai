@@ -1,6 +1,6 @@
 {
-  "chain_id": 421614,
+  "chain_id": 10200,
   "contract": "EvidenceRootAnchor",
-  "rpc_url": "https://rpc.example.invalid",
+  "rpc_url": "${GNOSIS_CHIADO_RPC_URL}",
   "signer": "0x0000000000000000000000000000000000000000"
 }

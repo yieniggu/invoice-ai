@@ -35,3 +35,14 @@ artifacts/
 playwright-report/
 test-results/
 .DS_Store
+
+# Local classroom/deployment artifacts; canonical source remains versioned.
+/Untitled.ipynb
+/config/lab.env.example
+/contract-manifest.json
+/contracts/broadcast/
+/contracts/cache/
+/contracts/out/
+/data/
+/docs/production-lab-architecture.md
+/docs/production-lab-execution-ledger.md
