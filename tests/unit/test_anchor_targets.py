@@ -65,3 +65,27 @@ def test_remote_preflight_rejects_a_signer_not_declared_by_manifest(
         anchor_targets.preflight_anchor_target(
             "remote", SimpleNamespace(status="verified", root_hash=ROOT_HASH), False
         )
+
+
+def test_local_target_uses_the_configured_internal_rpc_url(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest = tmp_path / "local.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "contract": "EvidenceRootAnchor",
+                "chain_id": 31337,
+                "address": ADDRESS,
+                "signer": AUTHORIZED_SIGNER,
+            }
+        )
+    )
+    monkeypatch.setenv("INVOICEOPS_LOCAL_ANCHOR_MANIFEST", str(manifest))
+    monkeypatch.setenv("INVOICEOPS_LOCAL_ANCHOR_RPC_URL", "http://anvil-classroom:8545")
+
+    target = anchor_targets.configured_anchor_targets(
+        SimpleNamespace(status="verified", root_hash=ROOT_HASH), False
+    )[0]
+
+    assert target.rpc_url == "http://anvil-classroom:8545"

@@ -177,11 +177,10 @@ services:
       retries: 5
 
   anvil-classroom:
-    profiles: ["local", "classroom"]
+    profiles: ["local", "classroom", "production"]
     image: ghcr.io/foundry-rs/foundry:v1.0.0
     entrypoint: ["anvil"]
     command: ["--host", "0.0.0.0", "--port", "8545", "--chain-id", "31337"]
-    ports: ["127.0.0.1:8545:8545"]
     healthcheck:
       test: ["CMD", "cast", "block-number", "--rpc-url", "http://127.0.0.1:8545"]
       interval: 10s
@@ -189,7 +188,7 @@ services:
       retries: 5
 
   local-anchor-bootstrap:
-    profiles: ["local", "classroom"]
+    profiles: ["local", "classroom", "production"]
     build:
       context: .
       target: classroom
@@ -221,9 +220,15 @@ services:
       INVOICEOPS_REMOTE_ANCHOR_MANIFEST: ${INVOICEOPS_REMOTE_ANCHOR_MANIFEST:-}
       INVOICEOPS_REMOTE_ANCHOR_RPC_URL: ${INVOICEOPS_REMOTE_ANCHOR_RPC_URL:-}
       INVOICEOPS_REMOTE_ANCHOR_PRIVATE_KEY: ${INVOICEOPS_REMOTE_ANCHOR_PRIVATE_KEY:-}
+      INVOICEOPS_LOCAL_ANCHOR_MANIFEST: /app/anchor-deployments/local.json
+      INVOICEOPS_LOCAL_ANCHOR_RPC_URL: http://anvil-classroom:8545
     volumes:
       - ${INVOICEOPS_DATA_VOLUME:-/srv/invoiceops-unconfigured}:/app/var
+      - local-anchor-deployments:/app/anchor-deployments:ro
       - ${INVOICEOPS_REMOTE_ANCHOR_MANIFEST_HOST:-/dev/null}:/run/invoiceops/contract-manifest.json:ro
+    depends_on:
+      local-anchor-bootstrap:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
       interval: 10s

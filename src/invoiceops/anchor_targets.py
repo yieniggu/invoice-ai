@@ -132,7 +132,12 @@ def _target(target_name: AnchorTargetName, batch: EvidenceBatch, has_anchor: boo
         manifest_path = os.getenv(manifest_variable)
         if not manifest_path:
             return _unready(target_name, "Local anchor deployment manifest is not configured.")
-        return _deployment_target(target_name, manifest_variable, manifest_path, LOCAL_RPC_URL)
+        return _deployment_target(
+            target_name,
+            manifest_variable,
+            manifest_path,
+            os.getenv("INVOICEOPS_LOCAL_ANCHOR_RPC_URL", LOCAL_RPC_URL),
+        )
     manifest_variable = "INVOICEOPS_REMOTE_ANCHOR_MANIFEST"
     manifest_path = os.getenv(manifest_variable)
     if not manifest_path:

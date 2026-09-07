@@ -14,8 +14,19 @@ services_for_profile() {
   case "$profile" in
     manual|local) printf '%s\n' portal-lab ;;
     full-lab) printf '%s\n' portal-lab model-api postgres minio mlflow-lab proxy-lab ;;
-    production) printf '%s\n' portal-production model-api-production proxy-production ;;
+    production) printf '%s\n' anvil-classroom portal-production model-api-production proxy-production ;;
   esac
+}
+
+bootstrap_services_for_profile() {
+  case "$profile" in
+    production) printf '%s\n' local-anchor-bootstrap ;;
+  esac
+}
+
+services_to_start() {
+  services_for_profile
+  bootstrap_services_for_profile
 }
 
 compose() {
@@ -39,6 +50,20 @@ wait_for_healthy_service() {
     sleep "$health_interval"
   done
   printf '%s did not become healthy within %s attempts.\n' "$service" "$health_attempts" >&2
+  return 1
+}
+
+wait_for_completed_service() {
+  service="$1"
+  for ((attempt = 1; attempt <= health_attempts; attempt++)); do
+    container_id="$(compose ps --quiet "$service")"
+    if [ -n "$container_id" ] && \
+      [ "$(docker inspect --format '{{.State.Status}}:{{.State.ExitCode}}' "$container_id")" = "exited:0" ]; then
+      return 0
+    fi
+    sleep "$health_interval"
+  done
+  printf '%s did not complete successfully within %s attempts.\n' "$service" "$health_attempts" >&2
   return 1
 }
 
@@ -80,10 +105,17 @@ if [ "$profile" = "production" ]; then
 else
   compose_up=(up --detach --remove-orphans)
 fi
-if ! compose "${compose_up[@]}" $(services_for_profile); then
+if ! compose "${compose_up[@]}" $(services_to_start); then
   show_diagnostics
   exit 1
 fi
+
+while IFS= read -r service; do
+  if ! wait_for_completed_service "$service"; then
+    show_diagnostics
+    exit 1
+  fi
+done < <(bootstrap_services_for_profile)
 
 while IFS= read -r service; do
   if ! wait_for_healthy_service "$service"; then

@@ -304,7 +304,7 @@ def test_production_mlflow_percent_encodes_its_postgres_password_at_runtime() ->
 def test_classroom_compose_binds_student_services_to_localhost() -> None:
     compose = (ROOT / "compose.yml").read_text()
 
-    for port in ("5000", "8001", "8080", "8545"):
+    for port in ("5000", "8001", "8080"):
         assert f'"127.0.0.1:{port}:{port}"' in compose
     assert '"127.0.0.1:8889:8888"' in compose
     assert '"8000:8000"' not in compose
@@ -322,8 +322,8 @@ def test_classroom_compose_binds_student_services_to_localhost() -> None:
     assert "ghcr.io/foundry-rs/foundry:v1.0.0" in anvil
     assert 'entrypoint: ["anvil"]' in anvil
     assert 'command: ["--host", "0.0.0.0", "--port", "8545", "--chain-id", "31337"]' in anvil
-    assert 'ports: ["127.0.0.1:8545:8545"]' in anvil
-    assert '"production"' not in anvil
+    assert "ports:" not in anvil
+    assert '"production"' in anvil
 
 
 def test_local_anchor_bootstrap_exclusively_initializes_the_shared_manifest_volume() -> None:
@@ -335,6 +335,49 @@ def test_local_anchor_bootstrap_exclusively_initializes_the_shared_manifest_volu
     assert "local-anchor-deployments:/app/anchor-deployments:ro" in portal
     assert 'user: "0:0"' in bootstrap
     assert "local-anchor-deployments:/app/anchor-deployments" in bootstrap
+
+
+def test_production_compose_starts_private_anvil_before_the_portal() -> None:
+    compose = (ROOT / "compose.yml").read_text()
+    anvil = compose_service(compose, "anvil-classroom")
+    bootstrap = compose_service(compose, "local-anchor-bootstrap")
+    portal = compose_service(compose, "portal-production")
+
+    assert 'profiles: ["local", "classroom", "production"]' in anvil
+    assert "ports:" not in anvil
+    assert 'profiles: ["local", "classroom", "production"]' in bootstrap
+    assert "anvil-classroom:" in bootstrap
+    assert "condition: service_healthy" in bootstrap
+    assert "local-anchor-bootstrap:" in portal
+    assert "condition: service_completed_successfully" in portal
+    assert "local-anchor-deployments:/app/anchor-deployments:ro" in portal
+    assert "INVOICEOPS_LOCAL_ANCHOR_MANIFEST: /app/anchor-deployments/local.json" in portal
+    assert "INVOICEOPS_LOCAL_ANCHOR_RPC_URL: http://anvil-classroom:8545" in portal
+
+
+def test_production_resolved_compose_keeps_rpc_internal_only() -> None:
+    completed = subprocess.run(
+        ["docker", "compose", "--profile", "production", "config", "--format", "json"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "INVOICEOPS_IMAGE": "ghcr.io/acme/invoiceops@sha256:" + "a" * 64},
+    )
+    if completed.returncode:
+        pytest.skip(f"Docker Compose resolved config unavailable: {completed.stderr.strip()}")
+
+    resolved = json.loads(completed.stdout)
+    anvil = resolved["services"]["anvil-classroom"]
+    portal = resolved["services"]["portal-production"]
+    assert "ports" not in anvil
+    assert portal["environment"]["INVOICEOPS_LOCAL_ANCHOR_MANIFEST"] == (
+        "/app/anchor-deployments/local.json"
+    )
+    assert portal["environment"]["INVOICEOPS_LOCAL_ANCHOR_RPC_URL"] == "http://anvil-classroom:8545"
+    assert portal["depends_on"]["local-anchor-bootstrap"]["condition"] == (
+        "service_completed_successfully"
+    )
 
 
 def test_classroom_docker_target_installs_the_locked_teaching_group() -> None:
@@ -684,7 +727,10 @@ def test_portal_runbooks_keep_the_proven_runtime_identity_and_scoped_reset() -> 
         assert "999:999" not in runbook
         assert "999" not in runbook
     assert "install -d -o 100 -g 101 -m 0770" in runbook_05
-    assert "docker compose --profile production rm -f portal-production model-api-production proxy-production" in runbook_05b
+    assert (
+        "docker compose --profile production rm -f anvil-classroom local-anchor-bootstrap "
+        "portal-production model-api-production proxy-production"
+    ) in runbook_05b
     assert "rm -f /srv/invoiceops/var/invoiceops.db /srv/invoiceops/var/invoiceops.db-wal /srv/invoiceops/var/invoiceops.db-shm" in runbook_05b
     assert "docker compose --profile production run --rm --no-deps portal-production" in runbook_15
     assert "compose_write_probe_exit" in runbook_15
@@ -717,7 +763,7 @@ def test_http_classroom_session_override_is_explicit_and_scoped_to_portal() -> N
     assert "pueden ser interceptados" in runbook_05
     assert "Prueba de inicio de sesión:" in runbook_05b
     assert "INVOICEOPS_SESSION_COOKIE_SECURE=false" in runbook_05b
-    assert "INVOICEOPS_SESSION_COOKIE_SECURE=false" in runbook_09
+    assert "Caddy HTTP" in runbook_09
 
 
 def test_foundry_runbook_uses_an_ignored_local_env_template_and_preserves_vm_identity() -> None:
@@ -1018,8 +1064,15 @@ def test_production_deploy_rejects_unsafe_data_mount_before_champion_check(
 
 def test_production_deploy_limits_serving_services_after_preflight() -> None:
     deploy = (ROOT / "scripts" / "deploy-lab.sh").read_text()
+    rollback = (ROOT / "scripts" / "rollback-lab.sh").read_text()
 
-    assert 'production) printf \'%s\\n\' portal-production model-api-production proxy-production ;;' in deploy
+    assert (
+        'production) printf \'%s\\n\' anvil-classroom portal-production '
+        'model-api-production proxy-production ;;'
+    ) in deploy
+    assert 'production) printf \'%s\\n\' local-anchor-bootstrap ;;' in deploy
+    assert "wait_for_completed_service" in deploy
+    assert "local-anchor-bootstrap" in rollback
     assert (
         'if [ "$profile" = "production" ]; then\n'
         '  compose_up=(up --detach)\n'
