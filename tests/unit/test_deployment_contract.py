@@ -357,6 +357,21 @@ def test_production_compose_starts_private_anvil_before_the_portal() -> None:
     assert "INVOICEOPS_LOCAL_ANCHOR_RPC_URL: http://anvil-classroom:8545" in portal
 
 
+def test_remote_manifest_bridge_keeps_the_host_source_private_and_portal_runtime_read_only() -> None:
+    compose = (ROOT / "compose.yml").read_text()
+    portal = compose_service(compose, "portal-production")
+    bootstrap = compose_service(compose, "remote-anchor-bootstrap")
+
+    assert "remote-anchor-runtime:/run/invoiceops:ro" in portal
+    assert "/etc/invoiceops/contract-manifest.json:/run/invoiceops" not in portal
+    assert 'user: "0:0"' in bootstrap
+    assert "${INVOICEOPS_REMOTE_ANCHOR_MANIFEST_HOST:-/dev/null}:" in bootstrap
+    assert "/host/invoiceops/contract-manifest.json:ro" in bootstrap
+    assert "remote-anchor-runtime:/run/invoiceops" in bootstrap
+    assert "remote-anchor-bootstrap:" in portal
+    assert "condition: service_completed_successfully" in portal
+
+
 def test_production_resolved_compose_keeps_rpc_internal_only() -> None:
     completed = subprocess.run(
         ["docker", "compose", "--profile", "production", "config", "--format", "json"],
@@ -385,6 +400,14 @@ def test_production_resolved_compose_keeps_rpc_internal_only() -> None:
     )
     assert portal["environment"]["INVOICEOPS_LOCAL_ANCHOR_RPC_URL"] == "http://anvil-classroom:8545"
     assert portal["depends_on"]["local-anchor-bootstrap"]["condition"] == (
+        "service_completed_successfully"
+    )
+    remote_bootstrap = resolved["services"]["remote-anchor-bootstrap"]
+    assert remote_bootstrap["user"] == "0:0"
+    assert remote_bootstrap["volumes"][0]["source"] == "/dev/null"
+    assert remote_bootstrap["volumes"][0]["target"] == "/host/invoiceops/contract-manifest.json"
+    assert remote_bootstrap["volumes"][0]["read_only"] is True
+    assert portal["depends_on"]["remote-anchor-bootstrap"]["condition"] == (
         "service_completed_successfully"
     )
 
@@ -961,14 +984,18 @@ def test_deploy_waits_for_health_and_runs_smokes_without_rollback(tmp_path: Path
         (
             "exited:1",
             1,
-            "local-anchor-bootstrap did not complete successfully within 1 attempts "
-            "(last state: exited:1).\n",
+            (
+                "local-anchor-bootstrap did not complete successfully within 1 attempts "
+                "(last state: exited:1).\n"
+            ),
         ),
         (
             "running:0",
             1,
-            "local-anchor-bootstrap did not complete successfully within 1 attempts "
-            "(last state: running:0).\n",
+            (
+                "local-anchor-bootstrap did not complete successfully within 1 attempts "
+                "(last state: running:0).\n"
+            ),
         ),
     ),
 )
@@ -1133,8 +1160,9 @@ def test_production_deploy_limits_serving_services_after_preflight() -> None:
         'production) printf \'%s\\n\' anvil-classroom portal-production '
         'model-api-production proxy-production ;;'
     ) in deploy
-    assert 'production) printf \'%s\\n\' local-anchor-bootstrap ;;' in deploy
+    assert 'production) printf \'%s\\n\' local-anchor-bootstrap remote-anchor-bootstrap ;;' in deploy
     assert "wait_for_completed_service" in deploy
+    assert "verify_remote_bootstrap" in deploy
     assert "local-anchor-bootstrap" in rollback
     assert (
         'if [ "$profile" = "production" ]; then\n'

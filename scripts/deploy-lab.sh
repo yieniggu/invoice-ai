@@ -20,7 +20,7 @@ services_for_profile() {
 
 bootstrap_services_for_profile() {
   case "$profile" in
-    production) printf '%s\n' local-anchor-bootstrap ;;
+    production) printf '%s\n' local-anchor-bootstrap remote-anchor-bootstrap ;;
   esac
 }
 
@@ -69,6 +69,29 @@ wait_for_completed_service() {
   printf '%s did not complete successfully within %s attempts (last state: %s).\n' \
     "$service" "$health_attempts" "$last_state" >&2
   return 1
+}
+
+verify_remote_bootstrap() {
+  remote_state="$(compose exec -T portal-production python -c \
+    "from pathlib import Path; print(Path('/run/invoiceops/remote-manifest-bootstrap-status').read_text().strip())")" || return 1
+  case "$remote_state" in
+    ready)
+      [ -n "${INVOICEOPS_REMOTE_ANCHOR_MANIFEST_HOST:-}" ] || {
+        printf 'remote-anchor-bootstrap reported ready without configured host manifest.\n' >&2
+        return 1
+      }
+      ;;
+    skipped)
+      [ -z "${INVOICEOPS_REMOTE_ANCHOR_MANIFEST_HOST:-}" ] || {
+        printf 'remote-anchor-bootstrap skipped a configured host manifest.\n' >&2
+        return 1
+      }
+      ;;
+    *)
+      printf 'remote-anchor-bootstrap reported invalid state: %s\n' "$remote_state" >&2
+      return 1
+      ;;
+  esac
 }
 
 smoke_service() {
@@ -127,6 +150,11 @@ while IFS= read -r service; do
     exit 1
   fi
 done < <(services_for_profile)
+
+if [ "$profile" = "production" ] && ! verify_remote_bootstrap; then
+  show_diagnostics
+  exit 1
+fi
 
 if [ "$profile" = "production" ]; then
   portal_service="portal-production"

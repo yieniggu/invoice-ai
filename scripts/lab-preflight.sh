@@ -88,6 +88,28 @@ main() {
 
   if [ "$profile" = "production" ]; then
     validate_production_data_mount
+    remote_set=0
+    for name in INVOICEOPS_REMOTE_ANCHOR_MANIFEST INVOICEOPS_REMOTE_ANCHOR_MANIFEST_HOST \
+      INVOICEOPS_REMOTE_ANCHOR_RPC_URL INVOICEOPS_REMOTE_ANCHOR_PRIVATE_KEY; do
+      [ -z "${!name:-}" ] || remote_set=$((remote_set + 1))
+    done
+    case "$remote_set" in
+      0) ;;
+      4)
+        [ "$INVOICEOPS_REMOTE_ANCHOR_MANIFEST" = /run/invoiceops/contract-manifest.json ] || {
+          printf 'Invalid Remote manifest runtime path.\n' >&2
+          exit 1
+        }
+        [ "$INVOICEOPS_REMOTE_ANCHOR_MANIFEST_HOST" = /etc/invoiceops/contract-manifest.json ] || {
+          printf 'Invalid Remote manifest host path.\n' >&2
+          exit 1
+        }
+        ;;
+      *)
+        printf 'Remote must be fully configured or disabled.\n' >&2
+        exit 1
+        ;;
+    esac
   fi
 
   docker compose --profile "$profile" config -q

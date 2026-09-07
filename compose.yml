@@ -223,15 +223,29 @@ services:
     volumes:
       - ${INVOICEOPS_DATA_VOLUME:-/srv/invoiceops-unconfigured}:/app/var
       - local-anchor-deployments:/app/anchor-deployments:ro
-      - ${INVOICEOPS_REMOTE_ANCHOR_MANIFEST_HOST:-/dev/null}:/run/invoiceops/contract-manifest.json:ro
+      - remote-anchor-runtime:/run/invoiceops:ro
     depends_on:
       local-anchor-bootstrap:
+        condition: service_completed_successfully
+      remote-anchor-bootstrap:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  remote-anchor-bootstrap:
+    profiles: ["production"]
+    image: ${INVOICEOPS_IMAGE:-invoiceops:unconfigured}
+    # This one-shot service alone can read the protected host manifest.
+    user: "0:0"
+    command: ["python", "-m", "invoiceops.legacy.remote_anchor_bootstrap"]
+    environment:
+      INVOICEOPS_REMOTE_ANCHOR_MANIFEST_HOST: ${INVOICEOPS_REMOTE_ANCHOR_MANIFEST_HOST:-}
+    volumes:
+      - ${INVOICEOPS_REMOTE_ANCHOR_MANIFEST_HOST:-/dev/null}:/host/invoiceops/contract-manifest.json:ro
+      - remote-anchor-runtime:/run/invoiceops
 
   model-api-production:
     profiles: ["production"]
@@ -365,3 +379,4 @@ volumes:
   mlflow-production-postgres:
   mlflow-production-artifacts:
   local-anchor-deployments:
+  remote-anchor-runtime:
