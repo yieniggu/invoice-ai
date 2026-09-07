@@ -136,6 +136,16 @@ def test_production_portal_forwards_the_complete_secure_auth_contract() -> None:
     )
 
 
+def test_production_portal_uses_model_api_private_mlflow_tracking_uri() -> None:
+    compose = (ROOT / "compose.yml").read_text()
+    portal_production = compose_service(compose, "portal-production")
+    model_api_production = compose_service(compose, "model-api-production")
+
+    tracking_uri = "http://mlflow-production:5000"
+    assert f"MLFLOW_TRACKING_URI: {tracking_uri}" in portal_production
+    assert f"MLFLOW_TRACKING_URI: {tracking_uri}" in model_api_production
+
+
 def test_production_image_runs_portal_as_the_documented_data_volume_user() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text()
 
@@ -667,6 +677,21 @@ def test_portal_runbooks_keep_the_proven_runtime_identity_and_scoped_reset() -> 
     assert "rm -f /srv/invoiceops/var/invoiceops.db /srv/invoiceops/var/invoiceops.db-wal /srv/invoiceops/var/invoiceops.db-shm" in runbook_05b
     assert "docker compose --profile production run --rm --no-deps portal-production" in runbook_15
     assert "compose_write_probe_exit" in runbook_15
+
+
+def test_portal_mlflow_lineage_runbooks_verify_private_access_before_declaring_a_run_missing() -> None:
+    runbooks = ROOT.parent.parent / "clases" / "03_02 de Septiembre" / "Clase4_Runbooks_Practicos"
+    runbook_05b = (runbooks / "05B_DEPLOY_MANUAL_PORTAL_EN_VM.md").read_text()
+    runbook_15 = (runbooks / "15_PREFLIGHT_Y_TROUBLESHOOTING.md").read_text()
+
+    for runbook in (runbook_05b, runbook_15):
+        assert "http://mlflow-production:5000" in runbook
+        assert "portal_tracking_uri=private_mlflow_service" in runbook
+        assert "portal_mlflow_run=resolved" in runbook
+        assert "MLflow run is unavailable: <id>" in runbook
+        assert "no imprime la URI efectiva, secretos ni el identificador del run" in runbook or (
+            "no muestra secretos, la URI efectiva ni el ID" in runbook
+        )
 
 
 def test_http_classroom_session_override_is_explicit_and_scoped_to_portal() -> None:

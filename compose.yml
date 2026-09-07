@@ -194,6 +194,7 @@ services:
       INVOICEOPS_SESSION_COOKIE_SECURE: ${INVOICEOPS_SESSION_COOKIE_SECURE:-true}
       INVOICEOPS_ALLOWED_DECISION_PRINCIPALS: ${INVOICEOPS_ALLOWED_DECISION_PRINCIPALS:-}
       INVOICEOPS_MODEL_API_URL: http://model-api-production:8001
+      MLFLOW_TRACKING_URI: http://mlflow-production:5000
     volumes:
       - ${INVOICEOPS_DATA_VOLUME:-/srv/invoiceops-unconfigured}:/app/var
     healthcheck:
