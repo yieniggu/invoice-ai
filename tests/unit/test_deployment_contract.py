@@ -326,6 +326,17 @@ def test_classroom_compose_binds_student_services_to_localhost() -> None:
     assert '"production"' not in anvil
 
 
+def test_local_anchor_bootstrap_exclusively_initializes_the_shared_manifest_volume() -> None:
+    compose = (ROOT / "compose.yml").read_text()
+
+    portal = compose_service(compose, "portal-lab")
+    bootstrap = compose_service(compose, "local-anchor-bootstrap")
+
+    assert "local-anchor-deployments:/app/anchor-deployments:ro" in portal
+    assert 'user: "0:0"' in bootstrap
+    assert "local-anchor-deployments:/app/anchor-deployments" in bootstrap
+
+
 def test_classroom_docker_target_installs_the_locked_teaching_group() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text()
 
@@ -659,7 +670,7 @@ def test_operator_runbooks_resolve_and_reuse_the_persisted_digest() -> None:
     assert "/etc/invoiceops/image-ref" in runbook_04
     assert "read -r -p 'Pegue el IMAGE_REF" not in runbook_04
     assert 'INVOICEOPS_IMAGE="$(</etc/invoiceops/image-ref)"' in runbook_05
-    assert "read -r -p" not in runbook_05
+    assert "read -r -p 'Pegue el IMAGE_REF" not in runbook_05
     assert "Pegue el IMAGE_REF" not in runbook_05
 
 

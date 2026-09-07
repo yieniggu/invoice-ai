@@ -168,7 +168,7 @@ export INVOICEOPS_DB_PATH=var/local-demo/invoiceops.db
 uv run jupyter lab
 ```
 
-Compruebe `curl --fail http://127.0.0.1:8001/health` y `curl --fail http://127.0.0.1:8000/api/health`. Abra JupyterLab, seleccione **InvoiceOps Python 3.12** y ejecute `01 -> 02 -> 03 -> 04 -> 05 -> 06`. Después de 05, consulte el Portal y continúe con Evidence Batches: inicial 2+, sucesor acumulativo 1+ y anchor Anvil `31337` en dos pasos. Consulte el [runbook de Clase 2](class-02-mlops-runbook.md) y el [de Clase 3](class-03-continuity-runbook.md); no inicie un segundo MLflow/Anvil.
+Compruebe `curl --fail http://127.0.0.1:8001/health` y `curl --fail http://127.0.0.1:8000/api/health`. Abra JupyterLab, seleccione **InvoiceOps Python 3.12** y ejecute `01 -> 02 -> 03 -> 04 -> 05 -> 06`. Después de 05, consulte el Portal y continúe con Evidence Batches: inicial 2+, sucesor acumulativo 1+ y anchor Anvil `31337` en dos pasos. Configure `INVOICEOPS_LOCAL_ANCHOR_MANIFEST=contracts/deployments/local.json` antes de iniciar el Portal; la pantalla muestra el motivo si falta manifest, RPC, deployment o signer. Consulte el [runbook de Clase 2](class-02-mlops-runbook.md) y el [de Clase 3](class-03-continuity-runbook.md); no inicie un segundo MLflow/Anvil.
 
 ## Método 2: ejecución con Docker
 
@@ -228,6 +228,8 @@ docker compose down -v
 | Situación | Qué hacer |
 |---|---|
 | Model API devuelve `503` | Confirme `invoice-review@champion` en MLflow, ejecute bootstrap/Registry y reinicie Model API. |
+| Control local deshabilitado | Configure `INVOICEOPS_LOCAL_ANCHOR_MANIFEST`, use Anvil `31337` y espere el bootstrap/deployment. |
+| Control remoto deshabilitado | Configure manifest público, RPC y la clave demo inyectada en las tres variables `INVOICEOPS_REMOTE_ANCHOR_*`; el Portal nunca usa Anvil como reemplazo. |
 | RPC, manifest o deployment falla | Use solo Anvil local `31337`, revise `contracts/deployments/local.json` y despliegue antes de anclar. |
 | Anchor `ambiguous` o `failed` | No reenvíe: use `batch-status` y `batch-reconcile` del runbook de Clase 3. |
 | `uv` o `docker` no se reconoce | Complete la guía de instalación de herramientas de macOS y cierre/abra Terminal antes de reintentar. |

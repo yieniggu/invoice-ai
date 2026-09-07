@@ -96,7 +96,7 @@ Consulte el procedimiento y la clasificación completa de comandos en [Clase 3](
 - En una factura, **Generate model evaluation** escribe auditoría; luego la evidencia corresponde a esa evaluación.
 - En **Evidence Batches**, cree un batch inicial con **2 o más** Evidence Records verificados.
 - Desde el batch, use **Create successor** y seleccione **1 o más** Evidence Records nuevos. El sucesor es acumulativo, no modifica el origen, y la UI muestra historial, enlaces, árbol y proofs.
-- El anchor web es deliberadamente de dos pasos: preflight sin transacción y confirmación que transmite una vez. Solo acepta Anvil local con chain ID `31337` y un deployment existente.
+- El anchor web es deliberadamente de dos pasos: preflight sin transacción y confirmación que transmite una vez. El operador elige explícitamente Anvil local `31337` o una cadena remota configurada; no hay fallback entre destinos.
 - `ambiguous` o `failed` no se resuelven reenviando. Inspeccione y reconcilie el anchor existente según el runbook.
 
 ## Acciones y seguridad

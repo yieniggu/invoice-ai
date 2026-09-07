@@ -19,14 +19,10 @@ from starlette.middleware.base import RequestResponseEndpoint
 from starlette.middleware.sessions import SessionMiddleware
 
 from invoiceops.anchor import (
-    LOCAL_CHAIN_ID,
     AnchorError,
     anchor_evidence_batch,
-    chain,
-    is_root_registered,
-    local_signer,
-    resolve_deployment,
 )
+from invoiceops.anchor_targets import configured_anchor_targets, preflight_anchor_target
 from invoiceops.domain.models import Decision
 from invoiceops.domain.policy import recommend_from_probability
 from invoiceops.evidence import (
@@ -158,26 +154,13 @@ def transaction_url(transaction_hash: str | None) -> str | None:
 
 
 def local_anchor_preflight(db_path: str | Path | None, batch: EvidenceBatch) -> dict[str, object]:
-    """Validate the fixed local deployment before a confirmation can be issued."""
-    if batch.status != "verified":
-        raise AnchorError("Only a verified batch can be anchored.")
-    deployment = resolve_deployment()
-    if deployment.chain_id != LOCAL_CHAIN_ID:
-        raise AnchorError(f"Local anchor manifest must use chain ID {LOCAL_CHAIN_ID}.")
-    if deployment.signer is None:
-        raise AnchorError("Local anchor manifest must contain the deployed signer.")
-    web3 = chain(expected_chain_id=LOCAL_CHAIN_ID)
-    signer = local_signer(web3)
-    if signer.lower() != deployment.signer.lower():
-        raise AnchorError("Local Anvil signer does not match the deployment manifest.")
-    if is_root_registered(web3, deployment.address, batch.root_hash):
-        raise AnchorError("Root is already registered; reconcile the existing anchor instead of resubmitting.")
+    """Compatibility wrapper retained for the existing local Portal tests and CLI flow."""
+    preflight = preflight_anchor_target("local", batch, False)
     return {
-        "web3": web3,
-        "deployment": deployment,
-        "signer": signer,
-        "chain_id": LOCAL_CHAIN_ID,
-        "contract_address": deployment.address,
+        "web3": preflight.web3,
+        "deployment": preflight.deployment,
+        "signer": preflight.signer,
+        **preflight.public_metadata,
     }
 
 
@@ -223,6 +206,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         except EvidenceError:
             return {"batch": None, "error": "Evidence batch not found."}
         anchor = get_latest_evidence_batch_anchor(db_path, batch.id)
+        anchor_targets = configured_anchor_targets(batch, anchor is not None)
         checks = [
             verify_evidence_batch(_resolve_db_path(db_path), batch.id, item.evaluation_id).to_dict()
             for item in batch.items
@@ -271,6 +255,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         return {
             "batch": batch,
             "anchor": anchor,
+            "anchor_targets": [target.public_metadata() for target in anchor_targets],
             "checks": checks,
             "records_by_evaluation": records_by_evaluation,
             "merkle_levels": merkle_levels,
@@ -526,8 +511,11 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         )
 
     @app.post("/evidence/batches/{batch_id}/anchor/request", response_class=HTMLResponse)
-    def request_local_anchor(
-        request: Request, batch_id: int, csrf_token: Annotated[str | None, Form()] = None
+    def request_anchor(
+        request: Request,
+        batch_id: int,
+        target: Annotated[str | None, Form()] = None,
+        csrf_token: Annotated[str | None, Form()] = None,
     ) -> Response:
         require_valid_csrf_token(request, csrf_token)
         context = batch_context(request, batch_id)
@@ -538,37 +526,55 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             context["error"] = "This batch already has an anchor lifecycle; use its recorded status for recovery."
             return templates.TemplateResponse(request=request, name="evidence_batch_detail.html", context=context, status_code=409)
         try:
-            preflight = local_anchor_preflight(db_path, batch)
+            target = target or "local"
+            if target not in {"local", "remote"}:
+                raise ValueError("Unknown anchor target.")
+            preflight = (
+                local_anchor_preflight(db_path, batch)
+                if target == "local"
+                else preflight_anchor_target("remote", batch, False)
+            )
         except (AnchorError, ValueError) as error:
-            context["error"] = f"Local Anvil preflight failed: {error}"
+            target_label = "Local Anvil" if target == "local" else "Remote anchor"
+            context["error"] = f"{target_label} preflight failed: {error}"
             return templates.TemplateResponse(request=request, name="evidence_batch_detail.html", context=context, status_code=503)
         token = secrets.token_urlsafe(32)
-        request.session["local_anchor_challenge"] = {
+        request.session["anchor_challenge"] = {
             "token": token,
             "username": session_principal(request),
             "batch_id": batch.id,
             "root_hash": batch.root_hash,
+            "target": target,
             "expires_at": time.time() + ANCHOR_CHALLENGE_TTL_SECONDS,
         }
         return templates.TemplateResponse(
             request=request,
             name="anchor_confirm.html",
-            context={"batch": batch, "challenge_token": token, "preflight": preflight},
+            context={
+                "batch": batch,
+                "challenge_token": token,
+                "preflight": (
+                    {**preflight, "name": "local", "label": "Local Anvil"}
+                    if isinstance(preflight, dict)
+                    else preflight.public_metadata
+                ),
+            },
         )
 
     @app.post("/evidence/batches/{batch_id}/anchor/confirm")
-    def confirm_local_anchor(
+    def confirm_anchor(
         request: Request,
         batch_id: int,
         challenge_token: Annotated[str, Form()],
         csrf_token: Annotated[str | None, Form()] = None,
     ) -> Response:
         require_valid_csrf_token(request, csrf_token)
-        challenge = request.session.pop("local_anchor_challenge", None)
+        challenge = request.session.pop("anchor_challenge", None)
         if not isinstance(challenge, dict) or (
             challenge.get("token") != challenge_token
             or challenge.get("username") != session_principal(request)
             or challenge.get("batch_id") != batch_id
+            or challenge.get("target") not in {"local", "remote"}
             or not isinstance(challenge.get("expires_at"), float)
             or challenge["expires_at"] < time.time()
         ):
@@ -583,17 +589,23 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             context["error"] = "This batch already has an anchor lifecycle; no transaction was sent."
             return templates.TemplateResponse(request=request, name="evidence_batch_detail.html", context=context, status_code=409)
         try:
-            preflight = local_anchor_preflight(db_path, batch)
+            preflight = (
+                local_anchor_preflight(db_path, batch)
+                if challenge["target"] == "local"
+                else preflight_anchor_target("remote", batch, False)
+            )
             anchor_evidence_batch(
                 db_path,
                 batch_id=batch.id,
                 root_hash=batch.root_hash,
-                web3=preflight["web3"],
-                deployment=preflight["deployment"],
-                signer=preflight["signer"],
+                web3=preflight["web3"] if isinstance(preflight, dict) else preflight.web3,
+                deployment=(
+                    preflight["deployment"] if isinstance(preflight, dict) else preflight.deployment
+                ),
+                signer=preflight["signer"] if isinstance(preflight, dict) else preflight.signer,
             )
-        except (AnchorError, ValueError) as error:
-            context["error"] = f"Local anchor was not submitted: {error}"
+        except (AnchorError, ValueError):
+            context["error"] = "Anchor was not submitted: preflight or broadcast failed."
             return templates.TemplateResponse(request=request, name="evidence_batch_detail.html", context=context, status_code=503)
         return RedirectResponse(f"/evidence/batches/{batch_id}", status_code=303)
 

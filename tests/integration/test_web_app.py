@@ -1,6 +1,7 @@
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Self
 from uuid import UUID
 
@@ -11,6 +12,7 @@ import invoiceops.legacy.app as legacy_app
 from invoiceops.domain.models import InvoiceStatus
 from invoiceops.domain.policy import recommend_from_probability
 from invoiceops.evidence import (
+    EvidenceBatch,
     EvidenceError,
     EvidenceProvenance,
     EvidenceRecord,
@@ -961,6 +963,173 @@ def test_local_anchor_preflight_failure_is_recoverable_without_submission(
     assert response.status_code == 503
     assert "Local Anvil preflight failed" in response.text
     assert not submitted
+
+
+def test_anchor_targets_render_local_and_configured_remote_metadata(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    batch = _batch_for_anchor_target_tests(db_path, monkeypatch)
+    _configure_anchor_targets(monkeypatch, tmp_path)
+
+    response = authenticated_client(db_path).get(f"/evidence/batches/{batch.id}")
+
+    assert response.status_code == 200
+    assert 'data-testid="anchor-target-local"' in response.text
+    assert "Local Anvil" in response.text
+    assert 'data-testid="anchor-target-remote"' in response.text
+    assert "Gnosis Chiado" in response.text
+    assert "10200" in response.text
+
+
+def test_anchor_target_readiness_disables_actions_for_missing_prerequisites(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    batch = _batch_for_anchor_target_tests(db_path, monkeypatch)
+    _configure_anchor_targets(monkeypatch, tmp_path)
+    client = authenticated_client(db_path)
+
+    monkeypatch.delenv("INVOICEOPS_LOCAL_ANCHOR_MANIFEST")
+    local_missing = client.get(f"/evidence/batches/{batch.id}")
+
+    assert re.search(
+        r'<button(?=[^>]*data-testid="anchor-submit-local")(?=[^>]*disabled)[^>]*>',
+        local_missing.text,
+    )
+    assert "Local anchor deployment manifest is not configured." in local_missing.text
+
+    for variable_name, reason in (
+        ("INVOICEOPS_REMOTE_ANCHOR_MANIFEST", "Remote anchor deployment manifest is not configured."),
+        ("INVOICEOPS_REMOTE_ANCHOR_RPC_URL", "Remote anchor RPC URL is not configured."),
+        ("INVOICEOPS_REMOTE_ANCHOR_PRIVATE_KEY", "Remote anchor private key is not configured."),
+    ):
+        _configure_anchor_targets(monkeypatch, tmp_path)
+        monkeypatch.delenv(variable_name)
+
+        response = client.get(f"/evidence/batches/{batch.id}")
+
+        assert re.search(
+            r'<button(?=[^>]*data-testid="anchor-submit-remote")(?=[^>]*disabled)[^>]*>',
+            response.text,
+        )
+        assert reason in response.text
+
+
+def test_configured_remote_anchor_renders_public_metadata_without_private_key(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    batch = _batch_for_anchor_target_tests(db_path, monkeypatch)
+    private_key = _configure_anchor_targets(monkeypatch, tmp_path)
+
+    response = authenticated_client(db_path).get(f"/evidence/batches/{batch.id}")
+
+    assert response.status_code == 200
+    assert "Gnosis Chiado" in response.text
+    assert "10200" in response.text
+    assert "https://rpc.chiadochain.net" in response.text
+    assert "0x0000000000000000000000000000000000000001" in response.text
+    assert private_key not in response.text
+    assert "INVOICEOPS_REMOTE_ANCHOR_PRIVATE_KEY" not in response.text
+
+
+def test_remote_anchor_confirmation_uses_target_aware_server_side_preflight(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    batch = _batch_for_anchor_target_tests(db_path, monkeypatch)
+    _configure_anchor_targets(monkeypatch, tmp_path)
+    client = authenticated_client(db_path)
+    csrf_token = csrf_token_from(client.get(f"/evidence/batches/{batch.id}"))
+    calls: list[tuple[int, str, object]] = []
+    remote_preflight = SimpleNamespace(
+        public_metadata={
+            "name": "remote",
+            "label": "Gnosis Chiado",
+            "chain_id": 10200,
+            "contract_address": "0x0000000000000000000000000000000000000001",
+            "signer": "0x0000000000000000000000000000000000000002",
+        },
+        web3=object(),
+        deployment=object(),
+        signer=object(),
+    )
+    monkeypatch.setattr(legacy_app, "preflight_anchor_target", lambda *_: remote_preflight)
+    monkeypatch.setattr(
+        legacy_app,
+        "anchor_evidence_batch",
+        lambda _db_path, *, batch_id, root_hash, web3, deployment, signer: calls.append(
+            (batch_id, root_hash, signer)
+        ),
+    )
+
+    challenge = client.post(
+        f"/evidence/batches/{batch.id}/anchor/request",
+        data={"csrf_token": csrf_token, "target": "remote"},
+    )
+    token = re.search(r'name="challenge_token" value="([^"]+)"', challenge.text)
+    assert token is not None
+    confirmed = client.post(
+        f"/evidence/batches/{batch.id}/anchor/confirm",
+        data={"csrf_token": csrf_token, "challenge_token": token.group(1)},
+        follow_redirects=False,
+    )
+
+    assert challenge.status_code == 200
+    assert "Confirm Gnosis Chiado anchor" in challenge.text
+    assert confirmed.status_code == 303
+    assert calls == [(batch.id, batch.root_hash, remote_preflight.signer)]
+
+
+def test_remote_preflight_failure_does_not_submit_or_leak_key(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    batch = _batch_for_anchor_target_tests(db_path, monkeypatch)
+    private_key = _configure_anchor_targets(monkeypatch, tmp_path)
+    client = authenticated_client(db_path)
+    csrf_token = csrf_token_from(client.get(f"/evidence/batches/{batch.id}"))
+    monkeypatch.setattr(
+        legacy_app,
+        "preflight_anchor_target",
+        lambda *_: (_ for _ in ()).throw(legacy_app.AnchorError("remote chain mismatch")),
+    )
+
+    response = client.post(
+        f"/evidence/batches/{batch.id}/anchor/request",
+        data={"csrf_token": csrf_token, "target": "remote"},
+    )
+
+    assert response.status_code == 503
+    assert "Remote anchor preflight failed" in response.text
+    assert private_key not in response.text
+
+
+def _batch_for_anchor_target_tests(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> EvidenceBatch:
+    first_id, second_id = persist_two_evidence_records(db_path, monkeypatch)
+    return create_evidence_batch(db_path, [first_id, second_id])
+
+
+def _configure_anchor_targets(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
+    remote_manifest = tmp_path / "remote-anchor.json"
+    remote_manifest.write_text(
+        json.dumps(
+            {
+                "name": "Gnosis Chiado",
+                "chain_id": 10200,
+                "contract": "EvidenceRootAnchor",
+                "address": "0x0000000000000000000000000000000000000001",
+            }
+        )
+    )
+    private_key = "0x" + "1" * 64
+    project_root = Path(__file__).parents[2]
+    monkeypatch.setenv(
+        "INVOICEOPS_LOCAL_ANCHOR_MANIFEST",
+        str(project_root / "contracts" / "deployments" / "local.json"),
+    )
+    monkeypatch.setenv("INVOICEOPS_REMOTE_ANCHOR_MANIFEST", str(remote_manifest))
+    monkeypatch.setenv("INVOICEOPS_REMOTE_ANCHOR_RPC_URL", "https://rpc.chiadochain.net")
+    monkeypatch.setenv("INVOICEOPS_REMOTE_ANCHOR_PRIVATE_KEY", private_key)
+    return private_key
 
 
 def persist_two_evidence_records(

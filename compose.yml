@@ -10,10 +10,16 @@ services:
       INVOICEOPS_DEMO_PASSWORD: demo-password
       INVOICEOPS_SESSION_SECRET: dev-only-change-me
       INVOICEOPS_MODEL_API_URL: http://model-api:8001
-    volumes: ["invoice-data:/app/var"]
+      INVOICEOPS_LOCAL_ANCHOR_MANIFEST: /app/anchor-deployments/local.json
     depends_on:
       classroom-db-bootstrap:
         condition: service_completed_successfully
+      local-anchor-bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - invoice-data:/app/var
+      - local-anchor-deployments:/app/anchor-deployments:ro
+    ports: ["127.0.0.1:8000:8000"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
       interval: 10s
@@ -171,7 +177,7 @@ services:
       retries: 5
 
   anvil-classroom:
-    profiles: ["classroom"]
+    profiles: ["local", "classroom"]
     image: ghcr.io/foundry-rs/foundry:v1.0.0
     entrypoint: ["anvil"]
     command: ["--host", "0.0.0.0", "--port", "8545", "--chain-id", "31337"]
@@ -181,6 +187,23 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  local-anchor-bootstrap:
+    profiles: ["local", "classroom"]
+    build:
+      context: .
+      target: classroom
+    # Docker creates named volumes as root; only this one-shot initializer needs write access.
+    user: "0:0"
+    command: ["python", "-m", "invoiceops.legacy.local_anchor_bootstrap"]
+    environment:
+      INVOICEOPS_EVM_RPC_URL: http://anvil-classroom:8545
+      INVOICEOPS_LOCAL_ANCHOR_MANIFEST: /app/anchor-deployments/local.json
+    volumes:
+      - local-anchor-deployments:/app/anchor-deployments
+    depends_on:
+      anvil-classroom:
+        condition: service_healthy
 
   portal-production:
     profiles: ["production"]
@@ -195,8 +218,12 @@ services:
       INVOICEOPS_ALLOWED_DECISION_PRINCIPALS: ${INVOICEOPS_ALLOWED_DECISION_PRINCIPALS:-}
       INVOICEOPS_MODEL_API_URL: http://model-api-production:8001
       MLFLOW_TRACKING_URI: http://mlflow-production:5000
+      INVOICEOPS_REMOTE_ANCHOR_MANIFEST: ${INVOICEOPS_REMOTE_ANCHOR_MANIFEST:-}
+      INVOICEOPS_REMOTE_ANCHOR_RPC_URL: ${INVOICEOPS_REMOTE_ANCHOR_RPC_URL:-}
+      INVOICEOPS_REMOTE_ANCHOR_PRIVATE_KEY: ${INVOICEOPS_REMOTE_ANCHOR_PRIVATE_KEY:-}
     volumes:
       - ${INVOICEOPS_DATA_VOLUME:-/srv/invoiceops-unconfigured}:/app/var
+      - ${INVOICEOPS_REMOTE_ANCHOR_MANIFEST_HOST:-/dev/null}:/run/invoiceops/contract-manifest.json:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
       interval: 10s
@@ -334,3 +361,4 @@ volumes:
   mlflow-artifacts:
   mlflow-production-postgres:
   mlflow-production-artifacts:
+  local-anchor-deployments:

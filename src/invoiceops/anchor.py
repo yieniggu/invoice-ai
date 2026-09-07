@@ -103,6 +103,7 @@ class AnchorDeployment:
     chain_id: int
     address: str
     signer: str | None = None
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -195,6 +196,7 @@ def resolve_deployment(path: str | Path = DEFAULT_MANIFEST_PATH) -> AnchorDeploy
     configured_chain_id = payload["chain_id"]
     address = payload["address"]
     signer = payload.get("signer")
+    name = payload.get("name")
     if contract != "EvidenceRootAnchor":
         raise AnchorConfigurationError("deployment manifest contract must be EvidenceRootAnchor")
     if isinstance(configured_chain_id, bool) or not isinstance(configured_chain_id, int):
@@ -203,7 +205,9 @@ def resolve_deployment(path: str | Path = DEFAULT_MANIFEST_PATH) -> AnchorDeploy
         raise AnchorConfigurationError("deployment manifest address must be an Ethereum address")
     if signer is not None and (not isinstance(signer, str) or not Web3.is_address(signer)):
         raise AnchorConfigurationError("deployment manifest signer must be an Ethereum address")
-    return AnchorDeployment(contract, configured_chain_id, address, signer)
+    if name is not None and (not isinstance(name, str) or not name.strip()):
+        raise AnchorConfigurationError("deployment manifest name must be a non-empty string")
+    return AnchorDeployment(contract, configured_chain_id, address, signer, name)
 
 
 def _contract(web3: Web3, address: str) -> Any:
