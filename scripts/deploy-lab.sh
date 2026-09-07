@@ -55,15 +55,19 @@ wait_for_healthy_service() {
 
 wait_for_completed_service() {
   service="$1"
+  last_state="container not found"
   for ((attempt = 1; attempt <= health_attempts; attempt++)); do
-    container_id="$(compose ps --quiet "$service")"
-    if [ -n "$container_id" ] && \
-      [ "$(docker inspect --format '{{.State.Status}}:{{.State.ExitCode}}' "$container_id")" = "exited:0" ]; then
-      return 0
+    container_id="$(compose ps --quiet --all "$service")"
+    if [ -n "$container_id" ]; then
+      last_state="$(docker inspect --format '{{.State.Status}}:{{.State.ExitCode}}' "$container_id")"
+      if [ "$last_state" = "exited:0" ]; then
+        return 0
+      fi
     fi
     sleep "$health_interval"
   done
-  printf '%s did not complete successfully within %s attempts.\n' "$service" "$health_attempts" >&2
+  printf '%s did not complete successfully within %s attempts (last state: %s).\n' \
+    "$service" "$health_attempts" "$last_state" >&2
   return 1
 }
 

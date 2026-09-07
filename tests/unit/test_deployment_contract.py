@@ -954,6 +954,60 @@ def test_deploy_waits_for_health_and_runs_smokes_without_rollback(tmp_path: Path
     assert " down" not in calls
 
 
+@pytest.mark.parametrize(
+    ("state", "expected_returncode", "expected_stderr"),
+    (
+        ("exited:0", 0, ""),
+        (
+            "exited:1",
+            1,
+            "local-anchor-bootstrap did not complete successfully within 1 attempts "
+            "(last state: exited:1).\n",
+        ),
+        (
+            "running:0",
+            1,
+            "local-anchor-bootstrap did not complete successfully within 1 attempts "
+            "(last state: running:0).\n",
+        ),
+    ),
+)
+def test_one_shot_deploy_wait_requires_a_successfully_exited_container(
+    state: str, expected_returncode: int, expected_stderr: str
+) -> None:
+    deploy = (ROOT / "scripts" / "deploy-lab.sh").read_text()
+    match = re.search(
+        r"(wait_for_completed_service\(\) \{.*?^\})",
+        deploy,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None
+    wait_function = match.group(1)
+    harness = f"""set -u
+health_attempts=1
+health_interval=0
+compose() {{
+  [ \"$*\" = \"ps --quiet --all local-anchor-bootstrap\" ] && printf 'bootstrap-id\\n'
+}}
+docker() {{
+  [ \"$1\" = inspect ] && printf '%s\\n' \"$BOOTSTRAP_STATE\"
+}}
+{wait_function}
+wait_for_completed_service local-anchor-bootstrap
+"""
+
+    completed = subprocess.run(
+        ["bash", "-c", harness],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "BOOTSTRAP_STATE": state},
+    )
+
+    assert completed.returncode == expected_returncode
+    assert completed.stderr == expected_stderr
+
+
 def test_full_lab_deploy_rejects_a_missing_champion_before_compose_up(tmp_path: Path) -> None:
     docker = tmp_path / "docker"
     log = tmp_path / "docker.log"
