@@ -49,14 +49,15 @@ from invoiceops.legacy.auth import (
 from invoiceops.legacy.db import (
     InvalidInvoiceTransition,
     _resolve_db_path,
+    get_evidence_batch_anchor_for_target,
     get_evidence_batch_predecessor,
     get_evidence_context,
     get_invoice,
-    get_latest_evidence_batch_anchor,
     get_or_insert_model_evaluation,
     get_persisted_canonical_payload,
     init_db,
     list_decision_events,
+    list_evidence_batch_anchors,
     list_evidence_batch_successors,
     list_evidence_batches,
     list_evidence_batches_for_invoice,
@@ -205,8 +206,9 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             batch = get_evidence_batch(db_path, batch_id)
         except EvidenceError:
             return {"batch": None, "error": "Evidence batch not found."}
-        anchor = get_latest_evidence_batch_anchor(db_path, batch.id)
-        anchor_targets = configured_anchor_targets(batch, anchor is not None)
+        anchors = list_evidence_batch_anchors(db_path, batch.id)
+        anchors_by_target = {anchor["target"]: anchor for anchor in anchors}
+        anchor_targets = configured_anchor_targets(batch, set(anchors_by_target))
         checks = [
             verify_evidence_batch(_resolve_db_path(db_path), batch.id, item.evaluation_id).to_dict()
             for item in batch.items
@@ -254,8 +256,15 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         ]
         return {
             "batch": batch,
-            "anchor": anchor,
-            "anchor_targets": [target.public_metadata() for target in anchor_targets],
+            "anchor_targets": [
+                {
+                    **target.public_metadata(),
+                    "anchor": dict(anchors_by_target[target.name])
+                    if target.name in anchors_by_target
+                    else None,
+                }
+                for target in anchor_targets
+            ],
             "checks": checks,
             "records_by_evaluation": records_by_evaluation,
             "merkle_levels": merkle_levels,
@@ -522,13 +531,21 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         batch = context["batch"]
         if batch is None:
             return templates.TemplateResponse(request=request, name="evidence_batch_detail.html", context=context, status_code=404)
-        if context["anchor"] is not None:
-            context["error"] = "This batch already has an anchor lifecycle; use its recorded status for recovery."
-            return templates.TemplateResponse(request=request, name="evidence_batch_detail.html", context=context, status_code=409)
         try:
             target = target or "local"
             if target not in {"local", "remote"}:
                 raise ValueError("Unknown anchor target.")
+            if get_evidence_batch_anchor_for_target(db_path, batch.id, target) is not None:
+                context["error"] = (
+                    f"This batch already has a {target} anchor lifecycle; "
+                    "use its recorded status for recovery."
+                )
+                return templates.TemplateResponse(
+                    request=request,
+                    name="evidence_batch_detail.html",
+                    context=context,
+                    status_code=409,
+                )
             preflight = (
                 local_anchor_preflight(db_path, batch)
                 if target == "local"
@@ -585,8 +602,8 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         if batch is None or batch.root_hash != challenge.get("root_hash"):
             context["error"] = "Batch root changed or no longer exists. Request a new preflight."
             return templates.TemplateResponse(request=request, name="evidence_batch_detail.html", context=context, status_code=409)
-        if context["anchor"] is not None:
-            context["error"] = "This batch already has an anchor lifecycle; no transaction was sent."
+        if get_evidence_batch_anchor_for_target(db_path, batch.id, challenge["target"]) is not None:
+            context["error"] = f"This batch already has a {challenge['target']} anchor lifecycle; no transaction was sent."
             return templates.TemplateResponse(request=request, name="evidence_batch_detail.html", context=context, status_code=409)
         try:
             preflight = (
@@ -603,6 +620,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
                     preflight["deployment"] if isinstance(preflight, dict) else preflight.deployment
                 ),
                 signer=preflight["signer"] if isinstance(preflight, dict) else preflight.signer,
+                target=challenge["target"],
             )
         except (AnchorError, ValueError):
             context["error"] = "Anchor was not submitted: preflight or broadcast failed."

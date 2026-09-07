@@ -33,7 +33,7 @@ def test_migrations_apply_in_order(tmp_path: Path) -> None:
 def test_migrations_are_idempotent(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     db_path = tmp_path / "invoiceops.db"
 
-    assert run_migrations(db_path) == 9
+    assert run_migrations(db_path) == 10
     assert run_migrations(db_path) == 0
 
     assert "0 migrations pending" in capsys.readouterr().out
@@ -51,7 +51,75 @@ def test_migrations_are_idempotent(tmp_path: Path, capsys: pytest.CaptureFixture
         (7, "evidence_batches"),
         (8, "evidence_batch_anchors"),
         (9, "evidence_batch_successors"),
+        (10, "evidence_batch_anchor_targets"),
     ]
+
+
+def test_anchor_target_migration_preserves_legacy_local_anchor_and_allows_remote(tmp_path: Path) -> None:
+    db_path = tmp_path / "invoiceops.db"
+    with _connect(db_path) as connection:
+        connection.execute(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)"
+        )
+        connection.executemany(
+            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, '2026-01-01T00:00:00Z')",
+            [
+                (version, name)
+                for version, name in (
+                    (1, "initial"),
+                    (2, "ml_risk_context"),
+                    (3, "model_evaluations"),
+                    (4, "notebook_audit_idempotency"),
+                    (5, "evidence_records"),
+                    (6, "evidence_hashes"),
+                    (7, "evidence_batches"),
+                    (8, "evidence_batch_anchors"),
+                    (9, "evidence_batch_successors"),
+                )
+            ],
+        )
+        connection.execute("CREATE TABLE evidence_batches (id INTEGER PRIMARY KEY)")
+        connection.execute("INSERT INTO evidence_batches (id) VALUES (1)")
+        connection.execute(
+            """
+            CREATE TABLE evidence_batch_anchors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL, root_hash TEXT NOT NULL,
+                chain_id INTEGER NOT NULL, contract_address TEXT NOT NULL, transaction_hash TEXT,
+                block_number INTEGER, gas_used INTEGER, submitted_at TEXT NOT NULL, anchored_at TEXT,
+                status TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX idx_evidence_batch_anchors_batch_id ON evidence_batch_anchors (batch_id)"
+        )
+        connection.execute(
+            """
+            INSERT INTO evidence_batch_anchors (
+                batch_id, root_hash, chain_id, contract_address, submitted_at, status
+            ) VALUES (1, 'a', 31337, '0xlocal', '2026-01-01T00:00:00Z', 'verified')
+            """
+        )
+
+    assert run_migrations(db_path) == 1
+
+    with _connect(db_path) as connection:
+        legacy_target = connection.execute(
+            "SELECT target FROM evidence_batch_anchors WHERE batch_id = 1"
+        ).fetchone()["target"]
+        connection.execute(
+            """
+            INSERT INTO evidence_batch_anchors (
+                batch_id, target, root_hash, chain_id, contract_address, submitted_at, status
+            ) VALUES (1, 'remote', 'a', 10200, '0xremote', '2026-01-01T00:01:00Z', 'submitted')
+            """
+        )
+        anchors = connection.execute(
+            "SELECT target FROM evidence_batch_anchors WHERE batch_id = 1 ORDER BY id"
+        ).fetchall()
+
+    assert legacy_target == "local"
+    assert [anchor["target"] for anchor in anchors] == ["local", "remote"]
 
 
 def test_model_evaluations_migration_has_the_expected_schema(tmp_path: Path) -> None:
@@ -241,7 +309,7 @@ def test_legacy_database_is_adopted_without_changing_data(tmp_path: Path) -> Non
             "SELECT sql FROM sqlite_master WHERE name = 'invoices'"
         ).fetchone()[0]
 
-    assert run_migrations(db_path) == 8
+    assert run_migrations(db_path) == 9
 
     with _connect(db_path) as connection:
         after = connection.execute(
@@ -260,7 +328,7 @@ def test_legacy_database_is_adopted_without_changing_data(tmp_path: Path) -> Non
         ).fetchone()
     assert after != before
     assert count == 1
-    assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     assert tuple(risk_context) == (0, 0, 0, 1.0, "medium")
 
 
@@ -301,7 +369,7 @@ def test_create_app_initializes_an_empty_database(tmp_path: Path) -> None:
     create_app(db_path)
 
     with _connect(db_path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 9
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 10
         assert connection.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 0
 
 
@@ -320,7 +388,7 @@ def test_reset_demo_migrates_then_seeds(tmp_path: Path, monkeypatch: pytest.Monk
     reset_local_demo(demo_root, confirmed=True)
 
     with _connect(db_path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 9
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 10
         assert connection.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 8
     assert not state_path.exists()
     assert not artifact_path.exists()

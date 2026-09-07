@@ -16,7 +16,7 @@ from invoiceops.evidence import (
     verify_merkle_proof,
     verify_persisted_evidence_record,
 )
-from invoiceops.legacy.db import get_latest_evidence_batch_anchor
+from invoiceops.legacy.db import get_evidence_batch_anchor_for_target
 
 
 @dataclass(frozen=True)
@@ -78,7 +78,7 @@ def verify_evidence_batch(
 
     if batch is not None:
         try:
-            anchor = get_latest_evidence_batch_anchor(db_path, batch.id)
+            anchor = get_evidence_batch_anchor_for_target(db_path, batch.id, "local")
         except sqlite3.Error:
             anchor = None
         if (

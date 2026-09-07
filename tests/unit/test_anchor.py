@@ -625,7 +625,31 @@ def test_batch_anchor_timeout_is_persisted_and_reconciled_without_resubmitting(
     assert reconciled.block_number == 42
     assert reconciled.gas_used == 21_000
     assert reconciled.anchored_at is not None
+    remote = submit_evidence_batch_anchor(
+        db_path,
+        batch_id=batch.id,
+        root_hash=batch.root_hash,
+        web3=web3,
+        deployment=deployment,
+        signer=SIGNER,
+        target="remote",
+    )
+    repeated_remote = submit_evidence_batch_anchor(
+        db_path,
+        batch_id=batch.id,
+        root_hash=batch.root_hash,
+        web3=web3,
+        deployment=deployment,
+        signer=SIGNER,
+        target="remote",
+    )
+
+    assert submitted.target == "local"
+    assert remote.target == "remote"
+    assert repeated_remote.id == remote.id
     assert calls == [
+        ("register", bytes.fromhex(batch.root_hash)),
+        ("transact", {"from": SIGNER}),
         ("register", bytes.fromhex(batch.root_hash)),
         ("transact", {"from": SIGNER}),
     ]

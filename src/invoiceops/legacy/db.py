@@ -429,6 +429,7 @@ def get_evidence_context(db_path: str | Path | None, evaluation_id: int) -> sqli
                 AND evidence_batch_items.evidence_contract_version = evidence_records.contract_version
             LEFT JOIN evidence_batches ON evidence_batches.id = evidence_batch_items.batch_id
             LEFT JOIN evidence_batch_anchors ON evidence_batch_anchors.batch_id = evidence_batches.id
+                AND evidence_batch_anchors.target = 'local'
             WHERE evidence_records.evaluation_id = ?
             ORDER BY evidence_batches.id DESC
             LIMIT 1
@@ -595,6 +596,7 @@ def list_evidence_batches(db_path: str | Path | None) -> list[sqlite3.Row]:
             SELECT evidence_batches.*, evidence_batch_anchors.status AS anchor_status
             FROM evidence_batches
             LEFT JOIN evidence_batch_anchors ON evidence_batch_anchors.batch_id = evidence_batches.id
+                AND evidence_batch_anchors.target = 'local'
             ORDER BY evidence_batches.id DESC
             """
         ).fetchall()
@@ -643,6 +645,7 @@ def list_evidence_batches_for_invoice(
             JOIN evidence_batch_items ON evidence_batch_items.batch_id = evidence_batches.id
             JOIN model_evaluations ON model_evaluations.id = evidence_batch_items.evaluation_id
             LEFT JOIN evidence_batch_anchors ON evidence_batch_anchors.batch_id = evidence_batches.id
+                AND evidence_batch_anchors.target = 'local'
             WHERE model_evaluations.invoice_id = ?
             ORDER BY evidence_batches.id DESC
             """,
@@ -684,6 +687,25 @@ def get_latest_evidence_batch_anchor(
         ).fetchone()
 
 
+def get_evidence_batch_anchor_for_target(
+    db_path: str | Path | None, batch_id: int, target: str
+) -> sqlite3.Row | None:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            "SELECT * FROM evidence_batch_anchors WHERE batch_id = ? AND target = ?",
+            (batch_id, target),
+        ).fetchone()
+
+
+def list_evidence_batch_anchors(
+    db_path: str | Path | None, batch_id: int
+) -> list[sqlite3.Row]:
+    with _connect(db_path) as connection:
+        return connection.execute(
+            "SELECT * FROM evidence_batch_anchors WHERE batch_id = ? ORDER BY id", (batch_id,)
+        ).fetchall()
+
+
 def insert_evidence_batch_anchor(
     db_path: str | Path | None,
     *,
@@ -694,6 +716,7 @@ def insert_evidence_batch_anchor(
     transaction_hash: str | None,
     submitted_at: str,
     status: str,
+    target: str = "local",
 ) -> int:
     with _connect(db_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -707,12 +730,13 @@ def insert_evidence_batch_anchor(
         cursor = connection.execute(
             """
             INSERT INTO evidence_batch_anchors (
-                batch_id, root_hash, chain_id, contract_address, transaction_hash,
+                batch_id, target, root_hash, chain_id, contract_address, transaction_hash,
                 submitted_at, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 batch_id,
+                target,
                 root_hash,
                 chain_id,
                 contract_address,

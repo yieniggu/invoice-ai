@@ -767,7 +767,7 @@ def test_evidence_batch_ui_requires_two_verified_records_and_shows_proofs(
     assert "keccak256(left || right)" in detail.text
     assert "matches persisted batch root" in detail.text
     assert "Merkle root is valid" in detail.text
-    assert "Root is not anchored" in detail.text
+    assert "Register this verified root on Local Anvil and Remote Chain" in detail.text
 
 
 def test_evidence_batch_detail_uses_the_default_database_path(
@@ -911,7 +911,7 @@ def test_local_anchor_confirmation_is_server_side_single_use(
     monkeypatch.setattr(
         legacy_app,
         "anchor_evidence_batch",
-        lambda _db_path, *, batch_id, root_hash, web3, deployment, signer: calls.append((batch_id, root_hash)),
+        lambda _db_path, *, batch_id, root_hash, web3, deployment, signer, target: calls.append((batch_id, root_hash, target)),
     )
 
     challenge = client.post(
@@ -934,7 +934,7 @@ def test_local_anchor_confirmation_is_server_side_single_use(
     assert "Confirm local Anvil anchor" in challenge.text
     assert confirmed.status_code == 303
     assert repeated.status_code == 409
-    assert calls == [(batch.id, batch.root_hash)]
+    assert calls == [(batch.id, batch.root_hash, "local")]
 
 
 def test_local_anchor_preflight_failure_is_recoverable_without_submission(
@@ -1055,8 +1055,8 @@ def test_remote_anchor_confirmation_uses_target_aware_server_side_preflight(
     monkeypatch.setattr(
         legacy_app,
         "anchor_evidence_batch",
-        lambda _db_path, *, batch_id, root_hash, web3, deployment, signer: calls.append(
-            (batch_id, root_hash, signer)
+        lambda _db_path, *, batch_id, root_hash, web3, deployment, signer, target: calls.append(
+            (batch_id, root_hash, signer, target)
         ),
     )
 
@@ -1075,7 +1075,35 @@ def test_remote_anchor_confirmation_uses_target_aware_server_side_preflight(
     assert challenge.status_code == 200
     assert "Confirm Gnosis Chiado anchor" in challenge.text
     assert confirmed.status_code == 303
-    assert calls == [(batch.id, batch.root_hash, remote_preflight.signer)]
+    assert calls == [(batch.id, batch.root_hash, remote_preflight.signer, "remote")]
+
+
+def test_local_anchor_keeps_remote_registration_ready_and_independent(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    batch = _batch_for_anchor_target_tests(db_path, monkeypatch)
+    _configure_anchor_targets(monkeypatch, tmp_path)
+    insert_evidence_batch_anchor(
+        db_path,
+        batch_id=batch.id,
+        root_hash=batch.root_hash,
+        chain_id=31337,
+        contract_address="0x0000000000000000000000000000000000000001",
+        transaction_hash="a" * 64,
+        submitted_at="2026-01-01T00:00:00Z",
+        status="verified",
+        target="local",
+    )
+
+    response = authenticated_client(db_path).get(f"/evidence/batches/{batch.id}")
+
+    assert "Both targets can be registered for this same batch." in response.text
+    assert 'data-testid="anchor-target-local"' in response.text
+    assert "Anchor status</dt><dd>verified" in response.text
+    assert re.search(
+        r'<button(?=[^>]*data-testid="anchor-submit-remote")(?![^>]*disabled)[^>]*>',
+        response.text,
+    )
 
 
 def test_remote_preflight_failure_does_not_submit_or_leak_key(

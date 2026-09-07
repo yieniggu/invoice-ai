@@ -63,11 +63,11 @@ class AnchorPreflight:
         }
 
 
-def configured_anchor_targets(batch: EvidenceBatch, has_anchor: bool) -> list[AnchorTarget]:
+def configured_anchor_targets(batch: EvidenceBatch, anchored_targets: set[str]) -> list[AnchorTarget]:
     """Return public target metadata without reading or exposing private key values."""
     return [
-        _target("local", batch, has_anchor),
-        _target("remote", batch, has_anchor),
+        _target("local", batch, "local" in anchored_targets),
+        _target("remote", batch, "remote" in anchored_targets),
     ]
 
 
@@ -125,7 +125,8 @@ def _target(target_name: AnchorTargetName, batch: EvidenceBatch, has_anchor: boo
         return _unready(target_name, "Only a verified batch can be anchored.")
     if has_anchor:
         return _unready(
-            target_name, "This batch already has an anchor lifecycle; use its recorded status for recovery."
+            target_name,
+            f"This batch already has a {target_name} anchor lifecycle; use its recorded status for recovery.",
         )
     if target_name == "local":
         manifest_variable = "INVOICEOPS_LOCAL_ANCHOR_MANIFEST"

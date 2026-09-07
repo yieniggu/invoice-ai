@@ -25,7 +25,7 @@ from invoiceops.evidence import (
     get_evidence_batch,
     list_evaluation_candidates,
 )
-from invoiceops.legacy.db import _resolve_db_path, get_latest_evidence_batch_anchor
+from invoiceops.legacy.db import _resolve_db_path, get_evidence_batch_anchor_for_target
 from invoiceops.ml.registry import MODEL_NAME
 
 DISPLAY_ID_LIMIT = 20
@@ -185,7 +185,7 @@ def _inspect_evm_runtime(path: Path) -> EvmRuntimeState:
     if batch_id is not None and path.is_file():
         try:
             batch = get_evidence_batch(path, batch_id)
-            anchor = get_latest_evidence_batch_anchor(path, batch.id)
+            anchor = get_evidence_batch_anchor_for_target(path, batch.id, "local")
             anchor_status = anchor["status"] if anchor is not None else "missing"
         except (sqlite3.Error, EvidenceError, EvidencePersistenceError):
             anchor_status = "unavailable"

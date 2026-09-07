@@ -19,7 +19,7 @@ from invoiceops.legacy.db import (
 )
 from invoiceops.legacy.db import (
     get_evidence_batch_anchor,
-    get_latest_evidence_batch_anchor,
+    get_evidence_batch_anchor_for_target,
     insert_evidence_batch_anchor,
     set_evidence_batch_anchor_transaction,
     update_evidence_batch_anchor,
@@ -95,6 +95,7 @@ class EvidenceBatchAnchor:
     submitted_at: str
     anchored_at: str | None
     status: str
+    target: str = "local"
 
 
 @dataclass(frozen=True)
@@ -276,6 +277,7 @@ def _anchor_from_row(row: Any) -> EvidenceBatchAnchor:
         submitted_at=row["submitted_at"],
         anchored_at=row["anchored_at"],
         status=row["status"],
+        target=row["target"],
     )
 
 
@@ -294,6 +296,7 @@ def submit_evidence_batch_anchor(
     web3: Web3,
     deployment: AnchorDeployment,
     signer: str | RemoteSigner,
+    target: str = "local",
 ) -> EvidenceBatchAnchor:
     """Durably reserve the verified batch before submitting its canonical transaction."""
     root_hash_bytes(root_hash)
@@ -302,6 +305,8 @@ def submit_evidence_batch_anchor(
         raise AnchorTransactionError(f"evidence batch not found: {batch_id}")
     if batch["status"] != "verified" or batch["root_hash"] != root_hash:
         raise AnchorTransactionError("evidence batch is not the verified canonical root")
+    if target not in {"local", "remote"}:
+        raise AnchorTransactionError(f"unknown anchor target: {target}")
     try:
         anchor_id = insert_evidence_batch_anchor(
             db_path,
@@ -312,15 +317,16 @@ def submit_evidence_batch_anchor(
             transaction_hash=None,
             submitted_at=_utc_now(),
             status="ambiguous",
+            target=target,
         )
     except sqlite3.IntegrityError:
-        existing = get_latest_evidence_batch_anchor(db_path, batch_id)
+        existing = get_evidence_batch_anchor_for_target(db_path, batch_id, target)
         if existing is None:
             raise AnchorTransactionError("evidence batch anchor reservation was not persisted")
         existing_anchor = _anchor_from_row(existing)
         if existing_anchor.root_hash != root_hash:
             raise AnchorTransactionError(
-                "evidence batch already has an anchor for a different root"
+                "evidence batch already has an anchor for a different root on this target"
             )
         return existing_anchor
     except (LookupError, ValueError) as error:
@@ -406,6 +412,7 @@ def anchor_evidence_batch(
     web3: Web3,
     deployment: AnchorDeployment,
     signer: str | RemoteSigner,
+    target: str = "local",
 ) -> EvidenceBatchAnchor:
     """Submit and reconcile a canonical evidence batch using the persisted transaction identity."""
     submitted = submit_evidence_batch_anchor(
@@ -415,6 +422,7 @@ def anchor_evidence_batch(
         web3=web3,
         deployment=deployment,
         signer=signer,
+        target=target,
     )
     if submitted.transaction_hash is not None:
         try:

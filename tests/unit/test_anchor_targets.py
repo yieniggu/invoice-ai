@@ -85,7 +85,7 @@ def test_local_target_uses_the_configured_internal_rpc_url(
     monkeypatch.setenv("INVOICEOPS_LOCAL_ANCHOR_RPC_URL", "http://anvil-classroom:8545")
 
     target = anchor_targets.configured_anchor_targets(
-        SimpleNamespace(status="verified", root_hash=ROOT_HASH), False
+        SimpleNamespace(status="verified", root_hash=ROOT_HASH), set()
     )[0]
 
     assert target.rpc_url == "http://anvil-classroom:8545"
